@@ -3,14 +3,12 @@ import cv2
 import numpy as np
 from PIL import Image
 import io
-import urllib.request
-import os
 import google.generativeai as genai
 
 st.set_page_config(page_title="Studio Passport Maker AI", page_icon="📸", layout="centered")
 
 # --- 🔒 PASSWORD PROTECTION ---
-APP_PASSWORD = "1234"  # Yahan apna manpasand password badal sakte hain
+APP_PASSWORD = "1234"
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -45,59 +43,40 @@ with st.sidebar:
         st.session_state.authenticated = False
         st.rerun()
 
-def get_face_cascade():
-    xml_path = "haarcascade_frontalface_default.xml"
-    if not os.path.exists(xml_path):
-        url = "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml"
-        try:
-            urllib.request.urlretrieve(url, xml_path)
-        except Exception:
-            pass
-    if os.path.exists(xml_path):
-        return cv2.CascadeClassifier(xml_path)
-    return None
-
-def detect_face(img):
+def smart_passport_frame(img):
     h, w = img.shape[:2]
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    face_cascade = get_face_cascade()
-    if face_cascade is not None:
-        try:
-            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(60, 60))
-            if len(faces) > 0:
-                return max(faces, key=lambda b: b[2] * b[3])
-        except Exception:
-            pass
-    return (int(w * 0.22), int(h * 0.15), int(w * 0.55), int(h * 0.45))
+    # Agar photo pehle se hi lagbhag 3.5:4.5 ratio mein hai
+    if 0.70 <= (w / h) <= 0.85:
+        return cv2.resize(img, (413, 531), interpolation=cv2.INTER_AREA)
 
-def is_already_passport(h, w, box):
-    bw = box[2]
-    return (0.70 <= (w / h) <= 0.85) and (0.35 <= (bw / w) <= 0.65)
+    target_ratio = 3.5 / 4.5
+    current_ratio = w / h
 
-def smart_crop(img, box):
-    h, w = img.shape[:2]
-    x, y, bw, bh = box
-    cx, cy = x + bw // 2, y + bh // 2
-    crop_w = int(bw * 2.35)
-    crop_h = int(crop_w * (4.5 / 3.5))
-    x1 = max(0, cx - crop_w // 2)
-    y1 = max(0, cy - int(bh * 1.25))
-    x2 = min(w, x1 + crop_w)
-    y2 = min(h, y1 + crop_h)
-    if y2 - y1 < crop_h: y1 = max(0, y2 - crop_h)
-    if x2 - x1 < crop_w: x2 = max(0, x2 - crop_w)
-    cropped = img[y1:y2, x1:x2]
+    if current_ratio > target_ratio:
+        # Photo chaudi (wide) hai, center se passport width crop karein
+        new_w = int(h * target_ratio)
+        x1 = max(0, (w - new_w) // 2)
+        x2 = min(w, x1 + new_w)
+        cropped = img[:, x1:x2]
+    else:
+        # Photo lambi hai, upar/chest region ko priority dekar crop karein
+        new_h = int(w / target_ratio)
+        y1 = int((h - new_h) * 0.25)
+        y1 = max(0, y1)
+        y2 = min(h, y1 + new_h)
+        cropped = img[y1:y2, :]
+
     return cv2.resize(cropped, (413, 531), interpolation=cv2.INTER_AREA)
 
 def apply_studio_blue_bg(img):
     h, w = img.shape[:2]
-    studio_blue = np.array([235, 185, 145], dtype=np.uint8)
+    studio_blue = np.array([235, 185, 145], dtype=np.uint8) # Studio light blue (BGR)
     mask = np.zeros((h, w), np.uint8)
     bgd = np.zeros((1, 65), np.float64)
     fgd = np.zeros((1, 65), np.float64)
-    rect = (10, 10, w - 20, h - 20)
+    rect = (8, 8, w - 16, h - 16)
     try:
-        cv2.grabCut(img, mask, rect, bgd, fgd, 4, cv2.GC_INIT_WITH_RECT)
+        cv2.grabCut(img, mask, rect, bgd, fgd, 3, cv2.GC_INIT_WITH_RECT)
         m2 = np.where((mask == 2) | (mask == 0), 0, 1).astype('uint8')
         m2 = cv2.GaussianBlur(m2.astype(np.float32), (7, 7), 0)
         m3 = np.repeat(m2[:, :, np.newaxis], 3, axis=2)
@@ -107,15 +86,18 @@ def apply_studio_blue_bg(img):
         return img
 
 def apply_face_glow(img):
-    smooth = cv2.bilateralFilter(img, d=7, sigmaColor=45, sigmaSpace=45)
-    lab = cv2.cvtColor(smooth, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.4, tileGridSize=(8, 8))
-    l_clahe = clahe.apply(l)
-    l_gora = cv2.convertScaleAbs(l_clahe, alpha=1.14, beta=16)
-    glow_bgr = cv2.cvtColor(cv2.merge([l_gora, a, b]), cv2.COLOR_LAB2BGR)
-    gaussian = cv2.GaussianBlur(glow_bgr, (0, 0), 1.8)
-    return cv2.addWeighted(glow_bgr, 1.20, gaussian, -0.20, 0)
+    try:
+        smooth = cv2.bilateralFilter(img, d=7, sigmaColor=45, sigmaSpace=45)
+        lab = cv2.cvtColor(smooth, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 8))
+        l_clahe = clahe.apply(l)
+        l_gora = cv2.convertScaleAbs(l_clahe, alpha=1.12, beta=14)
+        glow_bgr = cv2.cvtColor(cv2.merge([l_gora, a, b]), cv2.COLOR_LAB2BGR)
+        gaussian = cv2.GaussianBlur(glow_bgr, (0, 0), 1.5)
+        return cv2.addWeighted(glow_bgr, 1.18, gaussian, -0.18, 0)
+    except Exception:
+        return img
 
 def add_white_border(img):
     h, w = img.shape[:2]
@@ -151,7 +133,7 @@ def overlay_signature(photo, sig_img):
     sig_w = int(w * 0.60)
     resized_sig = cv2.resize(solid_sig, (sig_w, sig_h), interpolation=cv2.INTER_AREA)
 
-    y1 = h - sig_h - 22
+    y1 = h - sig_h - 24
     y2 = y1 + sig_h
     x1 = (w - sig_w) // 2
     x2 = x1 + sig_w
@@ -194,17 +176,19 @@ if final_photo_data and final_sig_data:
             sig_bytes = np.asarray(bytearray(final_sig_data), dtype=np.uint8)
             sig = cv2.imdecode(sig_bytes, cv2.IMREAD_UNCHANGED)
 
-            h, w = img.shape[:2]
-            box = detect_face(img)
+            # Smart Passport Auto Framing
+            framed = smart_passport_frame(img)
 
-            if is_already_passport(h, w, box):
-                framed = cv2.resize(img, (413, 531), interpolation=cv2.INTER_AREA)
-            else:
-                framed = smart_crop(img, box)
-
+            # Blue Studio Background
             blue_bg = apply_studio_blue_bg(framed)
+
+            # Face Glow & Skin Tone
             glowing = apply_face_glow(blue_bg)
+
+            # Border
             bordered = add_white_border(glowing)
+
+            # Jet Black Sign Overlay
             final_output = overlay_signature(bordered, sig)
 
             final_rgb = cv2.cvtColor(final_output, cv2.COLOR_BGR2RGB)
@@ -214,7 +198,7 @@ if final_photo_data and final_sig_data:
             byte_im = buf.getvalue()
 
             st.success("✅ Studio Passport Photo Taiyaar Ho Gayi!")
-            st.image(final_rgb, caption="Preview", width=260)
+            st.image(final_rgb, caption="Passport Preview (3.5cm x 4.5cm)", width=260)
 
             st.download_button(
                 label="📥 DOWNLOAD PASSPORT PHOTO",
