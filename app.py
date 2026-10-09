@@ -3,13 +3,12 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 import io
-from rembg import remove
 import google.generativeai as genai
 
 st.set_page_config(page_title="Studio Passport Maker AI", page_icon="📸", layout="centered")
 
 # --- 🔒 PASSWORD PROTECTION ---
-APP_PASSWORD = "1234k"
+APP_PASSWORD = "12k34"
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -63,11 +62,12 @@ def smart_passport_frame(pil_img):
 
     return pil_img.resize((413, 531), Image.Resampling.LANCZOS)
 
-def ai_studio_background_swap(pil_img):
-    # Deep Learning AI se baal aur body ko alag karega (100% hair safe)
-    cutout = remove(pil_img)
-    # Studio Passport Light Blue background (RGB: 145, 185, 235)
-    studio_bg = Image.new("RGBA", (413, 531), (145, 185, 235, 255))
+def ai_remove_bg(pil_img):
+    from rembg import remove, new_session
+    # Lightweight session taaki Streamlit RAM crash na ho
+    session = new_session("u2netp")
+    cutout = remove(pil_img, session=session)
+    studio_bg = Image.new("RGBA", pil_img.size, (145, 185, 235, 255))
     studio_bg.paste(cutout, (0, 0), cutout)
     return studio_bg.convert("RGB")
 
@@ -155,17 +155,17 @@ elif sig_mode == "📷 Signature Camera":
 
 if final_photo_data:
     if st.button("⚡ GENERATE STUDIO PASSPORT PHOTO NOW", type="primary", use_container_width=True):
-        with st.spinner("AI Studio Model se baal aur background process ho rahe hain..."):
+        with st.spinner("AI Processing in progress (Hair-safe studio mode)..."):
             pil_original = Image.open(io.BytesIO(final_photo_data))
             pil_original = ImageOps.exif_transpose(pil_original)
 
             # Smart Passport Ratio Frame
             framed_pil = smart_passport_frame(pil_original)
 
-            # AI Studio Background Swap (No Head Cut, Natural Hair)
-            clean_bg_pil = ai_studio_background_swap(framed_pil)
+            # Lightweight Fast AI BG Swap
+            clean_bg_pil = ai_remove_bg(framed_pil)
 
-            # CV2 Enhancements
+            # Studio Enhancements
             cv_img = cv2.cvtColor(np.array(clean_bg_pil), cv2.COLOR_RGB2BGR)
             glowing = apply_studio_glow(cv_img)
             bordered = add_white_border(glowing)
