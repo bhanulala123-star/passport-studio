@@ -1,5 +1,7 @@
 streamlit
 opencv-python-headless
 numpy
-Pillow
+pillow
+rembg
+onnxruntime
 google-generativeai
