@@ -3,9 +3,29 @@ import cv2
 import numpy as np
 from PIL import Image
 import io
+import urllib.request
+import os
 import google.generativeai as genai
 
 st.set_page_config(page_title="Studio Passport Maker AI", page_icon="📸", layout="centered")
+
+# --- 🔒 PASSWORD PROTECTION ---
+APP_PASSWORD = "1234"  # Yahan apna manpasand password badal sakte hain
+
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+    st.subheader("🔒 Studio Login")
+    entered_pw = st.text_input("Enter Passcode:", type="password")
+    if st.button("Unlock App", type="primary", use_container_width=True):
+        if entered_pw == APP_PASSWORD:
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("Galat Password!")
+    st.stop()
+# ------------------------------
 
 DEFAULT_API_KEY = ""
 
@@ -17,18 +37,37 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 with st.sidebar:
-    st.subheader("⚙️ AI Settings")
-    api_key_input = st.text_input("Gemini API Key:", value=DEFAULT_API_KEY, type="password")
+    st.subheader("⚙️ Settings")
+    api_key_input = st.text_input("Gemini API Key (Optional):", value=DEFAULT_API_KEY, type="password")
     if api_key_input:
         genai.configure(api_key=api_key_input)
+    if st.button("Logout"):
+        st.session_state.authenticated = False
+        st.rerun()
+
+def get_face_cascade():
+    xml_path = "haarcascade_frontalface_default.xml"
+    if not os.path.exists(xml_path):
+        url = "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml"
+        try:
+            urllib.request.urlretrieve(url, xml_path)
+        except Exception:
+            pass
+    if os.path.exists(xml_path):
+        return cv2.CascadeClassifier(xml_path)
+    return None
 
 def detect_face(img):
     h, w = img.shape[:2]
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(60, 60))
-    if len(faces) > 0:
-        return max(faces, key=lambda b: b[2] * b[3])
+    face_cascade = get_face_cascade()
+    if face_cascade is not None:
+        try:
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(60, 60))
+            if len(faces) > 0:
+                return max(faces, key=lambda b: b[2] * b[3])
+        except Exception:
+            pass
     return (int(w * 0.22), int(h * 0.15), int(w * 0.55), int(h * 0.45))
 
 def is_already_passport(h, w, box):
@@ -46,7 +85,7 @@ def smart_crop(img, box):
     x2 = min(w, x1 + crop_w)
     y2 = min(h, y1 + crop_h)
     if y2 - y1 < crop_h: y1 = max(0, y2 - crop_h)
-    if x2 - x1 < crop_w: x1 = max(0, x2 - crop_w)
+    if x2 - x1 < crop_w: x2 = max(0, x2 - crop_w)
     cropped = img[y1:y2, x1:x2]
     return cv2.resize(cropped, (413, 531), interpolation=cv2.INTER_AREA)
 
