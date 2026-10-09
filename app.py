@@ -30,7 +30,7 @@ DEFAULT_API_KEY = ""
 st.markdown("""
     <h2 style='text-align: center; color: #0d6efd;'>📸 Studio Passport Photo Maker</h2>
     <p style='text-align: center; color: gray; font-size: 14px;'>
-    Light Blue Studio BG • White Border • Face Glow • Jet-Black Sign
+    Natural Hair Preservation • Studio Blue BG • Face Touch-up • Sign Overlay
     </p>
 """, unsafe_allow_html=True)
 
@@ -39,47 +39,53 @@ with st.sidebar:
     api_key_input = st.text_input("Gemini API Key (Optional):", value=DEFAULT_API_KEY, type="password")
     if api_key_input:
         genai.configure(api_key=api_key_input)
+    bg_mode = st.radio("Background Style", ["Studio Light Blue (Smart)", "Keep Original BG"], index=0)
     if st.button("Logout"):
         st.session_state.authenticated = False
         st.rerun()
 
 def smart_passport_frame(img):
     h, w = img.shape[:2]
-    # Agar photo pehle se hi lagbhag 3.5:4.5 ratio mein hai
-    if 0.70 <= (w / h) <= 0.85:
-        return cv2.resize(img, (413, 531), interpolation=cv2.INTER_AREA)
-
     target_ratio = 3.5 / 4.5
     current_ratio = w / h
 
+    if 0.73 <= current_ratio <= 0.83:
+        return cv2.resize(img, (413, 531), interpolation=cv2.INTER_AREA)
+
     if current_ratio > target_ratio:
-        # Photo chaudi (wide) hai, center se passport width crop karein
         new_w = int(h * target_ratio)
         x1 = max(0, (w - new_w) // 2)
-        x2 = min(w, x1 + new_w)
-        cropped = img[:, x1:x2]
+        cropped = img[:, x1:x1 + new_w]
     else:
-        # Photo lambi hai, upar/chest region ko priority dekar crop karein
         new_h = int(w / target_ratio)
-        y1 = int((h - new_h) * 0.25)
-        y1 = max(0, y1)
-        y2 = min(h, y1 + new_h)
-        cropped = img[y1:y2, :]
+        # Sar katne se bachane ke liye upar se zyada space chhodte hain
+        y1 = max(0, int((h - new_h) * 0.10))
+        cropped = img[y1:y1 + new_h, :]
 
     return cv2.resize(cropped, (413, 531), interpolation=cv2.INTER_AREA)
 
-def apply_studio_blue_bg(img):
+def safe_studio_blue_bg(img):
     h, w = img.shape[:2]
-    studio_blue = np.array([235, 185, 145], dtype=np.uint8) # Studio light blue (BGR)
+    studio_blue = np.array([235, 185, 145], dtype=np.uint8) # Studio light blue BGR
+
     mask = np.zeros((h, w), np.uint8)
     bgd = np.zeros((1, 65), np.float64)
     fgd = np.zeros((1, 65), np.float64)
-    rect = (8, 8, w - 16, h - 16)
+
+    # Safe margin: Sar ko center probable foreground mein secure karte hain
+    rect = (15, 10, w - 30, h - 15)
     try:
-        cv2.grabCut(img, mask, rect, bgd, fgd, 3, cv2.GC_INIT_WITH_RECT)
+        cv2.grabCut(img, mask, rect, bgd, fgd, 2, cv2.GC_INIT_WITH_RECT)
+        
+        # Head / Crown Protection: Center top zone ko force-keep karte hain taaki baal na udein
+        head_cx, head_cy = w // 2, int(h * 0.32)
+        head_rx, head_ry = int(w * 0.32), int(h * 0.28)
+        cv2.ellipse(mask, (head_cx, head_cy), (head_rx, head_ry), 0, 0, 360, cv2.GC_PR_FGD, -1)
+
         m2 = np.where((mask == 2) | (mask == 0), 0, 1).astype('uint8')
-        m2 = cv2.GaussianBlur(m2.astype(np.float32), (7, 7), 0)
+        m2 = cv2.GaussianBlur(m2.astype(np.float32), (9, 9), 0)
         m3 = np.repeat(m2[:, :, np.newaxis], 3, axis=2)
+
         bg = np.full((h, w, 3), studio_blue, dtype=np.uint8)
         return (img * m3 + bg * (1.0 - m3)).astype(np.uint8)
     except Exception:
@@ -87,23 +93,21 @@ def apply_studio_blue_bg(img):
 
 def apply_face_glow(img):
     try:
-        smooth = cv2.bilateralFilter(img, d=7, sigmaColor=45, sigmaSpace=45)
+        smooth = cv2.bilateralFilter(img, d=5, sigmaColor=35, sigmaSpace=35)
         lab = cv2.cvtColor(smooth, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 8))
+        clahe = cv2.createCLAHE(clipLimit=1.8, tileGridSize=(8, 8))
         l_clahe = clahe.apply(l)
-        l_gora = cv2.convertScaleAbs(l_clahe, alpha=1.12, beta=14)
+        l_gora = cv2.convertScaleAbs(l_clahe, alpha=1.06, beta=8)
         glow_bgr = cv2.cvtColor(cv2.merge([l_gora, a, b]), cv2.COLOR_LAB2BGR)
-        gaussian = cv2.GaussianBlur(glow_bgr, (0, 0), 1.5)
-        return cv2.addWeighted(glow_bgr, 1.18, gaussian, -0.18, 0)
+        return cv2.addWeighted(glow_bgr, 1.10, img, -0.10, 0)
     except Exception:
         return img
 
 def add_white_border(img):
     h, w = img.shape[:2]
     res = img.copy()
-    margin = 12
-    cv2.rectangle(res, (margin, margin), (w - margin, h - margin), (255, 255, 255), 4)
+    cv2.rectangle(res, (10, 10), (w - 10, h - 10), (255, 255, 255), 4)
     return res
 
 def process_signature(sig_img):
@@ -133,7 +137,7 @@ def overlay_signature(photo, sig_img):
     sig_w = int(w * 0.60)
     resized_sig = cv2.resize(solid_sig, (sig_w, sig_h), interpolation=cv2.INTER_AREA)
 
-    y1 = h - sig_h - 24
+    y1 = h - sig_h - 22
     y2 = y1 + sig_h
     x1 = (w - sig_w) // 2
     x2 = x1 + sig_w
@@ -151,45 +155,44 @@ if photo_mode == "📁 Gallery / File Upload":
     if uploaded_photo:
         final_photo_data = uploaded_photo.read()
 else:
-    camera_photo = st.camera_input("1️⃣ Camera ke samne dekh kar photo click karein")
+    camera_photo = st.camera_input("1️⃣ Live Camera se photo lein")
     if camera_photo:
         final_photo_data = camera_photo.read()
 
-sig_mode = st.radio("Signature kaise dena hai?", ["📁 Signature File Upload", "📷 Signature Ki Photo Kheenche"], horizontal=True)
+sig_mode = st.radio("Signature kaise dena hai?", ["📁 Signature Upload", "📷 Signature Camera", "❌ Bina Signature Ke"], horizontal=True)
 
 final_sig_data = None
-if sig_mode == "📁 Signature File Upload":
+if sig_mode == "📁 Signature Upload":
     uploaded_sig = st.file_uploader("2️⃣ Signature File Chuniye", type=["jpg", "jpeg", "png"])
     if uploaded_sig:
         final_sig_data = uploaded_sig.read()
-else:
-    camera_sig = st.camera_input("2️⃣ Kagaz par kiye sign ki photo kheenche")
+elif sig_mode == "📷 Signature Camera":
+    camera_sig = st.camera_input("2️⃣ Kagaz ke sign ki photo kheenche")
     if camera_sig:
         final_sig_data = camera_sig.read()
 
-if final_photo_data and final_sig_data:
+if final_photo_data:
     if st.button("⚡ GENERATE STUDIO PASSPORT PHOTO NOW", type="primary", use_container_width=True):
         with st.spinner("AI Studio Processing in progress..."):
             photo_bytes = np.asarray(bytearray(final_photo_data), dtype=np.uint8)
             img = cv2.imdecode(photo_bytes, cv2.IMREAD_COLOR)
 
-            sig_bytes = np.asarray(bytearray(final_sig_data), dtype=np.uint8)
-            sig = cv2.imdecode(sig_bytes, cv2.IMREAD_UNCHANGED)
-
-            # Smart Passport Auto Framing
             framed = smart_passport_frame(img)
 
-            # Blue Studio Background
-            blue_bg = apply_studio_blue_bg(framed)
+            if bg_mode == "Studio Light Blue (Smart)":
+                processed_bg = safe_studio_blue_bg(framed)
+            else:
+                processed_bg = framed
 
-            # Face Glow & Skin Tone
-            glowing = apply_face_glow(blue_bg)
-
-            # Border
+            glowing = apply_face_glow(processed_bg)
             bordered = add_white_border(glowing)
 
-            # Jet Black Sign Overlay
-            final_output = overlay_signature(bordered, sig)
+            if final_sig_data and sig_mode != "❌ Bina Signature Ke":
+                sig_bytes = np.asarray(bytearray(final_sig_data), dtype=np.uint8)
+                sig = cv2.imdecode(sig_bytes, cv2.IMREAD_UNCHANGED)
+                final_output = overlay_signature(bordered, sig)
+            else:
+                final_output = bordered
 
             final_rgb = cv2.cvtColor(final_output, cv2.COLOR_BGR2RGB)
             pil_img = Image.fromarray(final_rgb)
