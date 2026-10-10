@@ -36,20 +36,34 @@ with st.sidebar:
         st.rerun()
 
 def remove_background_free_ai(image_bytes, token):
-    url = "https://router.huggingface.co/hf-inference/models/briaai/RMBG-1.4"
+    # Supported model URLs on Hugging Face Inference
+    supported_models = [
+        "https://router.huggingface.co/hf-inference/models/briaai/RMBG-2.0",
+        "https://api-inference.huggingface.co/models/briaai/RMBG-2.0",
+        "https://router.huggingface.co/hf-inference/models/mattmdjaga/segformer_b2_clothes"
+    ]
+    
     headers = {
         "Authorization": f"Bearer {token.strip()}",
         "Content-Type": "application/octet-stream"
     }
-    response = requests.post(url, headers=headers, data=image_bytes, timeout=60)
-    if response.status_code == 200:
-        return Image.open(io.BytesIO(response.content)).convert("RGBA")
-    elif response.status_code == 503:
-        st.warning("⏳ AI Model warm up ho raha hai. 20 second baad dobara generate dabayein.")
-        return None
-    else:
-        st.error(f"Hugging Face Response ({response.status_code}): {response.text}")
-        return None
+    
+    last_err = ""
+    for url in supported_models:
+        try:
+            response = requests.post(url, headers=headers, data=image_bytes, timeout=60)
+            if response.status_code == 200:
+                return Image.open(io.BytesIO(response.content)).convert("RGBA")
+            elif response.status_code == 503:
+                st.warning("⏳ AI Model warm up ho raha hai. 15-20 second baad dobara try karein.")
+                return None
+            else:
+                last_err = f"{response.status_code}: {response.text}"
+        except Exception as e:
+            last_err = str(e)
+            
+    st.error(f"AI Server Response: {last_err}")
+    return None
 
 photo_mode = st.radio("Source Photo Kahan Se Lena Hai?", ["📁 Gallery / File Upload", "📷 Live Camera Capture"], horizontal=True)
 
@@ -74,9 +88,11 @@ if final_image_data:
                 try:
                     cutout_img = remove_background_free_ai(final_image_data, user_hf_token)
                     if cutout_img is not None:
+                        # 1. Studio Sky-Blue BG (#91b9eb -> RGB 145, 185, 235)
                         bg = Image.new("RGBA", cutout_img.size, (145, 185, 235, 255))
                         composed = Image.alpha_composite(bg, cutout_img).convert("RGB")
 
+                        # 2. Passport Crop (3.5cm x 4.5cm -> 413 x 531)
                         target_w, target_h = 413, 531
                         w, h = composed.size
                         target_ratio = target_w / target_h
@@ -93,9 +109,11 @@ if final_image_data:
 
                         composed = composed.resize((target_w, target_h), Image.Resampling.LANCZOS)
 
+                        # 3. White Border
                         draw = ImageDraw.Draw(composed)
                         draw.rounded_rectangle([(8, 8), (target_w - 8, target_h - 8)], radius=12, outline="white", width=4)
 
+                        # 4. Signature
                         try:
                             font = ImageFont.truetype("DejaVuSans.ttf", 24)
                         except Exception:
