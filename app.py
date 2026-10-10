@@ -124,4 +124,22 @@ if uploaded_photo is not None:
                 
                 x = (final_passport.width - proc_sig.width) // 2
                 y = final_passport.height - proc_sig.height - 30
-                final_passport.paste(proc_sig, (x, y), proc_sig
+                # Yahan par missing bracket thik kar diya gaya hai
+                final_passport.paste(proc_sig, (x, y), proc_sig)
+                
+            elif sig_option == "Type Name" and sig_text:
+                draw = ImageDraw.Draw(final_passport)
+                try:
+                    font = ImageFont.truetype("BrushScriptMT.ttf", 60)
+                except:
+                    font = ImageFont.load_default()
+                x = final_passport.width // 4
+                y = final_passport.height - 100
+                draw.text((x, y), sig_text, fill="black", font=font)
+
+            st.success("Photo is Ready!")
+            st.image(final_passport, caption="Final Output", use_column_width=True)
+            
+            buf = io.BytesIO()
+            final_passport.save(buf, format="PNG", quality=100)
+            st.download_button(label="Download HD Photo", data=buf.getvalue(), file_name="passport_ready.png", mime="image/png")
