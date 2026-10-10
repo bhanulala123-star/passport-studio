@@ -1,4 +1,1 @@
-streamlit
-pillow
-rembg[cpu]
-numpy
+pip install streamlit rembg opencv-python pillow 
