@@ -5,7 +5,6 @@ import requests
 
 st.set_page_config(page_title="Studio Passport AI Maker", page_icon="📸", layout="centered")
 
-# --- 🔒 PASSCODE ---
 ACCESS_CODE = "1234"
 
 if "unlocked" not in st.session_state:
@@ -42,13 +41,11 @@ def remove_background_free_ai(image_bytes, token):
         "Authorization": f"Bearer {token.strip()}",
         "Content-Type": "application/octet-stream"
     }
-    
     response = requests.post(url, headers=headers, data=image_bytes, timeout=60)
-    
     if response.status_code == 200:
         return Image.open(io.BytesIO(response.content)).convert("RGBA")
     elif response.status_code == 503:
-        st.warning("⏳ AI Model load ho raha hai (Warm up). Kripya 20 second baad dobara generate button dabayein.")
+        st.warning("⏳ AI Model warm up ho raha hai. 20 second baad dobara generate dabayein.")
         return None
     else:
         st.error(f"Hugging Face Response ({response.status_code}): {response.text}")
@@ -73,9 +70,53 @@ if final_image_data:
         if not user_hf_token.strip():
             st.error("⚠️ Pehle Sidebar kholein (>> upar left me) aur poori HuggingFace token paste karein.")
         else:
-            with st.spinner("Free Cloud AI photo process kar raha hai (Hair Safe & Studio BG)..."):
+            with st.spinner("Free Cloud AI photo process kar raha hai..."):
                 try:
                     cutout_img = remove_background_free_ai(final_image_data, user_hf_token)
-                    
                     if cutout_img is not None:
-                        # 1. Solid Studio Sky-Blue BG (#91b9eb -> RGB 145, 185, 
+                        bg = Image.new("RGBA", cutout_img.size, (145, 185, 235, 255))
+                        composed = Image.alpha_composite(bg, cutout_img).convert("RGB")
+
+                        target_w, target_h = 413, 531
+                        w, h = composed.size
+                        target_ratio = target_w / target_h
+                        current_ratio = w / h
+
+                        if current_ratio > target_ratio:
+                            new_w = int(h * target_ratio)
+                            left = (w - new_w) // 2
+                            composed = composed.crop((left, 0, left + new_w, h))
+                        else:
+                            new_h = int(w / target_ratio)
+                            top = int((h - new_h) * 0.10)
+                            composed = composed.crop((0, top, w, top + new_h))
+
+                        composed = composed.resize((target_w, target_h), Image.Resampling.LANCZOS)
+
+                        draw = ImageDraw.Draw(composed)
+                        draw.rounded_rectangle([(8, 8), (target_w - 8, target_h - 8)], radius=12, outline="white", width=4)
+
+                        try:
+                            font = ImageFont.truetype("DejaVuSans.ttf", 24)
+                        except Exception:
+                            font = ImageFont.load_default()
+
+                        if sig_text.strip():
+                            draw.text((int(target_w * 0.26), int(target_h * 0.76)), sig_text.strip(), fill=(15, 15, 15), font=font)
+
+                        buf = io.BytesIO()
+                        composed.save(buf, format="JPEG", quality=95)
+                        out_bytes = buf.getvalue()
+
+                        st.success("✅ Studio Passport Photo Taiyaar!")
+                        st.image(out_bytes, caption="Studio Passport (3.5cm x 4.5cm)", width=280)
+
+                        st.download_button(
+                            label="📥 DOWNLOAD PASSPORT PHOTO",
+                            data=out_bytes,
+                            file_name="studio_passport.jpg",
+                            mime="image/jpeg",
+                            use_container_width=True
+                        )
+                except Exception as ex:
+                    st.error(f"Execution Error: {repr(ex)}")
