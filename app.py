@@ -1,7 +1,7 @@
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
 import io
-from huggingface_hub import InferenceClient
+import requests
 
 st.set_page_config(page_title="Studio Passport AI Maker", page_icon="📸", layout="centered")
 
@@ -34,16 +34,29 @@ st.markdown("""
 
 with st.sidebar:
     st.subheader("⚙️ System Status")
-    st.success("✅ Free Cloud AI Active (Auto-Connected)")
+    st.success("✅ Free Cloud AI Active")
     if st.button("Logout"):
         st.session_state.unlocked = False
         st.rerun()
 
 def remove_background_free_ai(image_bytes, token):
-    client = InferenceClient(api_key=token.strip())
-    # Official client automatically handles model connection & endpoints
-    result = client.image_segmentation(image_bytes, model="briaai/RMBG-1.4")
-    return result
+    # Free AI model direct router with robust fallback
+    url = "https://router.huggingface.co/hf-inference/models/briaai/RMBG-1.4"
+    headers = {
+        "Authorization": f"Bearer {token.strip()}",
+        "Content-Type": "application/octet-stream"
+    }
+    
+    response = requests.post(url, headers=headers, data=image_bytes, timeout=60)
+    
+    if response.status_code == 200:
+        return Image.open(io.BytesIO(response.content)).convert("RGBA")
+    elif response.status_code == 503:
+        st.warning("⏳ AI Model load ho raha hai (Warm up). Kripya 15-20 second baad dobara generate button dabayein.")
+        return None
+    else:
+        st.error(f"Hugging Face Response ({response.status_code}): {response.text}")
+        return None
 
 photo_mode = st.radio("Source Photo Kahan Se Lena Hai?", ["📁 Gallery / File Upload", "📷 Live Camera Capture"], horizontal=True)
 
@@ -63,17 +76,14 @@ if final_image_data:
     if st.button("⚡ GENERATE STUDIO PASSPORT PHOTO NOW", type="primary", use_container_width=True):
         with st.spinner("Free Cloud AI photo process kar raha hai (Hair Safe & Studio BG)..."):
             try:
-                # 1. Background removal via official client
                 cutout_img = remove_background_free_ai(final_image_data, PERMANENT_HF_TOKEN)
                 
-                if cutout_img:
-                    cutout_img = cutout_img.convert("RGBA")
-
-                    # 2. Solid Studio Sky-Blue BG (#91b9eb -> RGB 145, 185, 235)
+                if cutout_img is not None:
+                    # 1. Solid Studio Sky-Blue BG (#91b9eb -> RGB 145, 185, 235)
                     bg = Image.new("RGBA", cutout_img.size, (145, 185, 235, 255))
                     composed = Image.alpha_composite(bg, cutout_img).convert("RGB")
 
-                    # 3. 3.5cm x 4.5cm Passport Crop (413 x 531)
+                    # 2. 3.5cm x 4.5cm Passport Crop (413 x 531)
                     target_w, target_h = 413, 531
                     w, h = composed.size
                     target_ratio = target_w / target_h
@@ -90,11 +100,11 @@ if final_image_data:
 
                     composed = composed.resize((target_w, target_h), Image.Resampling.LANCZOS)
 
-                    # 4. White Rounded Border
+                    # 3. White Rounded Border
                     draw = ImageDraw.Draw(composed)
                     draw.rounded_rectangle([(8, 8), (target_w - 8, target_h - 8)], radius=12, outline="white", width=4)
 
-                    # 5. Signature Overlay
+                    # 4. Signature
                     try:
                         font = ImageFont.truetype("DejaVuSans.ttf", 24)
                     except Exception:
@@ -118,4 +128,4 @@ if final_image_data:
                         use_container_width=True
                     )
             except Exception as ex:
-                st.error(f"Error: {str(ex)}")
+                st.error(f"Execution Error: {repr(ex)}")
