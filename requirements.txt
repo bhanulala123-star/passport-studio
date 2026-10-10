@@ -1,1 +1,5 @@
-pip install streamlit rembg opencv-python pillow 
+streamlit
+rembg
+opencv-python-headless
+Pillow
+numpy
