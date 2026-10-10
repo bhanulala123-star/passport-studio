@@ -1,13 +1,11 @@
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import io
-import os
-from google import genai
-from google.genai import types
+from rembg import remove
 
 st.set_page_config(page_title="Studio Passport AI Maker", page_icon="📸", layout="centered")
 
-# --- 🔒 PASSCODE ACCESS CONTROL ---
+# --- 🔒 PASSCODE ---
 ACCESS_CODE = "1234"
 
 if "unlocked" not in st.session_state:
@@ -21,71 +19,66 @@ if not st.session_state.unlocked:
             st.session_state.unlocked = True
             st.rerun()
         else:
-            st.error("Golat Code! Please sahi access code enter karein.")
+            st.error("Galat Code! Sahi passcode enter karein.")
     st.stop()
-# ------------------------------
 
 st.markdown("""
-    <h2 style='text-align: center; color: #0d6efd;'>📸 Premium AI Studio Passport Photo Maker</h2>
+    <h2 style='text-align: center; color: #0d6efd;'>📸 AI Studio Passport Photo Maker</h2>
     <p style='text-align: center; color: gray; font-size: 14px;'>
-    Gemini-2.5-Flash Multimodal AI • Original Hair Safe • Pure Studio Blue BG • White Round Border • Signature
+    Zero API Required • Natural Hair Preservation • Solid Studio Blue BG • Signature Overlay
     </p>
 """, unsafe_allow_html=True)
 
 with st.sidebar:
-    st.subheader("⚙️ AI Credentials")
-    api_key_input = st.text_input("Gemini API Key (Provide Google Studio Key):", type="password")
-    st.info("💡 Yeh app camera/file se photos lekar use modern Gemini Multimodal API se processing karti hai.")
+    st.subheader("⚙️ System Status")
+    st.success("✅ On-Device AI Active (No API Key Needed)")
     if st.button("Logout"):
         st.session_state.unlocked = False
         st.rerun()
 
-def call_passport_generation_api(image_bytes, signature_name, api_key):
-    """
-    Direct multimodal pipeline using gemini-2.5-flash-image
-    Focusing on natural face/hair restoration, studio sky-blue backdrop (#91b9eb), rounded border & sign.
-    """
-    # Initialize Google GenAI client safely
-    client = genai.Client(api_key=api_key)
+def process_passport_photo(img_bytes, signature_text):
+    original_img = Image.open(io.BytesIO(img_bytes))
     
-    # Load raw photo stream
-    original_pil = Image.open(io.BytesIO(image_bytes))
+    # 1. AI Cutout with hair protection (Runs locally via rembg AI model)
+    cutout = remove(original_img)
     
-    # Precise Image generation prompt with 2nd Image validation features
-    model_prompt = f"""
-    Strictly transform this uploaded user photo into a professional, vertical studio passport photo:
+    # 2. Studio Sky-Blue Background (RGB: 145, 185, 235)
+    bg = Image.new("RGBA", cutout.size, (145, 185, 235, 255))
+    composed = Image.alpha_composite(bg, cutout).convert("RGB")
     
-    1. FACE & IDENTITY PROTECTION (Strictest Priority): Fully retain the subject's 100% natural facial identity, exact age, gaze, and original hair strands (especially natural grey hairs) as in the input. Do NOT smudge, alter, crop, or artificialize any natural facial details. Avoid all cut-off or truncations of the hair.
+    # 3. Standard Passport Ratio Crop & Resize (3.5cm x 4.5cm -> 413 x 531)
+    target_w, target_h = 413, 531
+    w, h = composed.size
+    target_ratio = target_w / target_h
+    current_ratio = w / h
     
-    2. SOLID STUDIO BACKGROUND: Extract the person from the current background with seamless, feather-blended edge processing, placing them on an entirely solid studio sky-blue backdrop (#91b9eb) with balanced, soft studio back-fill lighting.
+    if current_ratio > target_ratio:
+        new_w = int(h * target_ratio)
+        left = (w - new_w) // 2
+        composed = composed.crop((left, 0, left + new_w, h))
+    else:
+        new_h = int(w / target_ratio)
+        top = int((h - new_h) * 0.15)
+        composed = composed.crop((0, top, w, top + new_h))
+        
+    composed = composed.resize((target_w, target_h), Image.Resampling.LANCZOS)
     
-    3. OFFICIAL BORDERING: Framed centered from head to shoulder in standard vertical 3.5cm x 4.5cm passport crop (3:4 ratio) with a smooth, soft-rounded 4-pixel-wide white inner border outlining the image.
+    # 4. White Rounded Border
+    draw = ImageDraw.Draw(composed)
+    draw.rounded_rectangle([(8, 8), (target_w - 8, target_h - 8)], radius=14, outline="white", width=4)
     
-    4. SIGNATURE EMBEDDING: Seamlessly natural handwritten cursive signature '{signature_name}' overlayed in black ink across the lower chest area/collar, clearly legible, but ensuring it does not overlap with or obscure the chin or face.
-    
-    Return the finalized vertical passport portrait in rich 3:4 resolution without any distortions.
-    """
-    
-    # Multimodal image API generation invoke
-    generation_response = client.models.generate_content(
-        model="gemini-2.5-flash-image",
-        contents=[original_pil, model_prompt],
-        config=types.GenerateContentConfig(
-            response_modalities=["IMAGE"],
-            image_config=types.ImageConfig(
-                aspect_ratio="3:4"
-            )
-        )
-    )
-    
-    # Iterate and capture returned image buffers
-    for part in generation_response.candidates[0].content.parts:
-        if part.inline_data:
-            return part.inline_data.data
-            
-    return None
+    # 5. Cursive / Elegant Signature Overlay on collar area
+    try:
+        font = ImageFont.truetype("DejaVuSans.ttf", 24)
+    except Exception:
+        font = ImageFont.load_default()
+        
+    if signature_text.strip():
+        draw.text((int(target_w * 0.26), int(target_h * 0.76)), signature_text.strip(), fill=(15, 15, 15), font=font)
+        
+    return composed
 
-photo_mode = st.radio("Sourse Photo Kahan Se Lena Hai?", ["📁 Gallery / File Upload", "📷 Live Camera Capture"], horizontal=True)
+photo_mode = st.radio("Source Photo Kahan Se Lena Hai?", ["📁 Gallery / File Upload", "📷 Live Camera Capture"], horizontal=True)
 
 final_image_data = None
 if photo_mode == "📁 Gallery / File Upload":
@@ -97,30 +90,27 @@ else:
     if camera_photo:
         final_image_data = camera_photo.read()
 
-sig_text = st.text_input("Signature Name (Jaise Pankaj Yadav):", value="Pankaj Yadav")
+sig_text = st.text_input("Signature Name:", value="Pankaj Yadav")
 
 if final_image_data:
     if st.button("⚡ GENERATE STUDIO PASSPORT PHOTO NOW", type="primary", use_container_width=True):
-        active_key = api_key_input.strip() or os.environ.get("GEMINI_API_KEY", "")
-        
-        if not active_key:
-            st.error("⚠️ Sidebar kholein (>> upar left me) aur apni valid Gemini API Key paste kijiye.")
-        else:
-            with st.spinner("Multimodal Gemini-2.5-Flash-Image pipeline se quality studio portrait build ho raha hai..."):
-                try:
-                    result_passport_bytes = call_passport_generation_api(final_image_data, sig_text, active_key)
-                    if result_passport_bytes:
-                        st.success("✅ Studio Passport Photo Safaltapurvak Taiyaar Ho Gayi!")
-                        st.image(result_passport_bytes, caption=f"AI Passport Image (3.5cm x 4.5cm)", width=280)
+        with st.spinner("AI photo process kar raha hai (Hair Safe & Studio BG)..."):
+            try:
+                res_img = process_passport_photo(final_image_data, sig_text)
+                
+                buf = io.BytesIO()
+                res_img.save(buf, format="JPEG", quality=95)
+                output_bytes = buf.getvalue()
+                
+                st.success("✅ Studio Passport Photo Taiyaar Ho Gayi!")
+                st.image(output_bytes, caption="AI Studio Portrait (3.5cm x 4.5cm)", width=280)
 
-                        st.download_button(
-                            label="📥 DOWNLOAD PASSPORT PHOTO",
-                            data=result_passport_bytes,
-                            file_name="studio_passport.jpg",
-                            mime="image/jpeg",
-                            use_container_width=True
-                        )
-                    else:
-                        st.warning("⚠️ API response issue. Please parameters verification kijiye.")
-                except Exception as ex:
-                    st.error(f"Execution Error: {str(ex)}")
+                st.download_button(
+                    label="📥 DOWNLOAD PASSPORT PHOTO",
+                    data=output_bytes,
+                    file_name="studio_passport.jpg",
+                    mime="image/jpeg",
+                    use_container_width=True
+                )
+            except Exception as ex:
+                st.error(f"Error: {str(ex)}")
