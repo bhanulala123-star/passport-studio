@@ -1,91 +1,10 @@
 import streamlit as st
-from PIL import Image, ImageDraw, ImageFont
-import numpy as np
-import cv2
 import io
-from rembg import remove
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 
-# UI sabse pehle load karne ke liye page config top par
+# UI sabse pehle load hoga taaki blank screen na aaye
 st.set_page_config(page_title="Pro Passport Maker", layout="centered")
-
-def auto_center_crop(image):
-    img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-    gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
-    
-    face_cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-    face_cascade = cv2.CascadeClassifier(face_cascade_path)
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-    
-    if len(faces) == 0:
-        return image
-    
-    faces = sorted(faces, key=lambda x: x[2]*x[3], reverse=True)
-    x, y, w, h = faces[0]
-    
-    center_x = x + w // 2
-    center_y = y + h // 2
-    
-    crop_width = int(w * 2.5) 
-    crop_height = int(crop_width * 1.33)
-    
-    x1 = max(0, center_x - crop_width // 2)
-    y1 = max(0, center_y - int(h * 0.8))
-    x2 = min(img_cv.shape[1], x1 + crop_width)
-    y2 = min(img_cv.shape[0], y1 + crop_height)
-    
-    cropped_cv = img_cv[y1:y2, x1:x2]
-    return Image.fromarray(cv2.cvtColor(cropped_cv, cv2.COLOR_BGR2RGB))
-
-def enhance_image(image):
-    img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-    smooth = cv2.bilateralFilter(img_cv, d=9, sigmaColor=75, sigmaSpace=75)
-    
-    lab = cv2.cvtColor(smooth, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8,8))
-    cl = clahe.apply(l)
-    limg = cv2.merge((cl,a,b))
-    enhanced_cv = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
-    
-    hsv = cv2.cvtColor(enhanced_cv, cv2.COLOR_BGR2HSV)
-    h, s, v = cv2.split(hsv)
-    s = cv2.add(s, 15) 
-    final_hsv = cv2.merge((h, s, v))
-    final_cv = cv2.cvtColor(final_hsv, cv2.COLOR_HSV2RGB)
-    
-    return Image.fromarray(final_cv)
-
-def process_background_and_border(image, bg_color=(100, 175, 230)):
-    img_byte_arr = io.BytesIO()
-    image.save(img_byte_arr, format='PNG')
-    output_byte_arr = remove(img_byte_arr.getvalue())
-    fg_img = Image.open(io.BytesIO(output_byte_arr)).convert("RGBA")
-    
-    bg = Image.new("RGBA", fg_img.size, bg_color + (255,))
-    bg.paste(fg_img, (0, 0), fg_img)
-    bg = bg.resize((600, 800), Image.LANCZOS)
-    
-    final_img = bg.convert("RGB")
-    draw = ImageDraw.Draw(final_img)
-    border_width = 15
-    draw.rectangle(
-        [border_width, border_width, final_img.width - border_width, final_img.height - border_width],
-        outline="white", width=border_width
-    )
-    return final_img
-
-def process_signature(sig_image):
-    sig_cv = cv2.cvtColor(np.array(sig_image), cv2.COLOR_RGB2GRAY)
-    _, thresh = cv2.threshold(sig_cv, 150, 255, cv2.THRESH_BINARY_INV)
-    kernel = np.ones((2,2), np.uint8)
-    bold_sig = cv2.dilate(thresh, kernel, iterations=1)
-    
-    h, w = bold_sig.shape
-    rgba_sig = np.zeros((h, w, 4), dtype=np.uint8)
-    rgba_sig[..., 3] = bold_sig
-    rgba_sig[..., 0:3] = 0 
-    
-    return Image.fromarray(rgba_sig)
 
 st.title("📸 Twinkle Online Centre - Pro Passport Maker")
 st.write("Upload photo and generate HD Passport Size Image with Auto-Crop, Blue BG, and Signature.")
@@ -108,7 +27,91 @@ if uploaded_photo is not None:
     st.image(original_img, caption="Original", use_column_width=True)
     
     if st.button("Generate HD Passport Photo"):
-        with st.spinner("Processing Photo (Wait a few seconds)..."):
+        with st.spinner("AI Engine Load ho raha hai & Photo Process ho rahi hai (Wait)..."):
+            # Heavy libraries button dabane ke baad load hongi taaki app turant open ho
+            import cv2
+            from rembg import remove
+
+            def auto_center_crop(image):
+                img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+                gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+                
+                face_cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+                face_cascade = cv2.CascadeClassifier(face_cascade_path)
+                faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+                
+                if len(faces) == 0:
+                    return image
+                
+                faces = sorted(faces, key=lambda x: x[2]*x[3], reverse=True)
+                x, y, w, h = faces[0]
+                
+                center_x = x + w // 2
+                center_y = y + h // 2
+                
+                crop_width = int(w * 2.5) 
+                crop_height = int(crop_width * 1.33)
+                
+                x1 = max(0, center_x - crop_width // 2)
+                y1 = max(0, center_y - int(h * 0.8))
+                x2 = min(img_cv.shape[1], x1 + crop_width)
+                y2 = min(img_cv.shape[0], y1 + crop_height)
+                
+                cropped_cv = img_cv[y1:y2, x1:x2]
+                return Image.fromarray(cv2.cvtColor(cropped_cv, cv2.COLOR_BGR2RGB))
+
+            def enhance_image(image):
+                img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+                smooth = cv2.bilateralFilter(img_cv, d=9, sigmaColor=75, sigmaSpace=75)
+                
+                lab = cv2.cvtColor(smooth, cv2.COLOR_BGR2LAB)
+                l, a, b = cv2.split(lab)
+                clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8,8))
+                cl = clahe.apply(l)
+                limg = cv2.merge((cl,a,b))
+                enhanced_cv = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+                
+                hsv = cv2.cvtColor(enhanced_cv, cv2.COLOR_BGR2HSV)
+                h, s, v = cv2.split(hsv)
+                s = cv2.add(s, 15) 
+                final_hsv = cv2.merge((h, s, v))
+                final_cv = cv2.cvtColor(final_hsv, cv2.COLOR_HSV2RGB)
+                
+                return Image.fromarray(final_cv)
+
+            def process_background_and_border(image, bg_color=(100, 175, 230)):
+                img_byte_arr = io.BytesIO()
+                image.save(img_byte_arr, format='PNG')
+                output_byte_arr = remove(img_byte_arr.getvalue())
+                fg_img = Image.open(io.BytesIO(output_byte_arr)).convert("RGBA")
+                
+                bg = Image.new("RGBA", fg_img.size, bg_color + (255,))
+                bg.paste(fg_img, (0, 0), fg_img)
+                bg = bg.resize((600, 800), Image.LANCZOS)
+                
+                final_img = bg.convert("RGB")
+                draw = ImageDraw.Draw(final_img)
+                border_width = 15
+                draw.rectangle(
+                    [border_width, border_width, final_img.width - border_width, final_img.height - border_width],
+                    outline="white", width=border_width
+                )
+                return final_img
+
+            def process_signature(sig_image):
+                sig_cv = cv2.cvtColor(np.array(sig_image), cv2.COLOR_RGB2GRAY)
+                _, thresh = cv2.threshold(sig_cv, 150, 255, cv2.THRESH_BINARY_INV)
+                kernel = np.ones((2,2), np.uint8)
+                bold_sig = cv2.dilate(thresh, kernel, iterations=1)
+                
+                h, w = bold_sig.shape
+                rgba_sig = np.zeros((h, w, 4), dtype=np.uint8)
+                rgba_sig[..., 3] = bold_sig
+                rgba_sig[..., 0:3] = 0 
+                
+                return Image.fromarray(rgba_sig)
+
+            # Execution Flow
             cropped = auto_center_crop(original_img)
             enhanced = enhance_image(cropped)
             final_passport = process_background_and_border(enhanced)
@@ -124,7 +127,6 @@ if uploaded_photo is not None:
                 
                 x = (final_passport.width - proc_sig.width) // 2
                 y = final_passport.height - proc_sig.height - 30
-                # Yahan par missing bracket thik kar diya gaya hai
                 final_passport.paste(proc_sig, (x, y), proc_sig)
                 
             elif sig_option == "Type Name" and sig_text:
