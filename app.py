@@ -1,7 +1,6 @@
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageOps
 import io
-import cv2
 import numpy as np
 from rembg import remove, new_session
 
@@ -26,7 +25,7 @@ if not st.session_state.unlocked:
 st.markdown("""
     <h2 style='text-align: center; color: #0d6efd;'>📸 Studio Passport Photo AI Maker</h2>
     <p style='text-align: center; color: gray; font-size: 13px;'>
-    Auto Face Centering • Studio Lighting • Cursive Signature • Zero Billing
+    100% Free • Perfect Face Centering • Studio Soft BG • Signature Overlay
     </p>
 """, unsafe_allow_html=True)
 
@@ -37,70 +36,53 @@ def load_session():
 session = load_session()
 
 def create_studio_gradient_bg(w, h):
-    """Studio soft spotlight sky-blue background"""
-    bg = np.zeros((h, w, 3), dtype=np.uint8)
-    center_x, center_y = w // 2, int(h * 0.40)
-    for y in range(h):
-        for x in range(w):
-            dist = np.sqrt((x - center_x)**2 + (y - center_y)**2) / (w * 0.75)
-            factor = min(1.0, dist)
-            # Center bright sky-blue to edges royal-blue
-            r = int(160 * (1 - factor) + 115 * factor)
-            g = int(195 * (1 - factor) + 160 * factor)
-            b = int(240 * (1 - factor) + 215 * factor)
-            bg[y, x] = [b, g, r]
-    return Image.fromarray(cv2.cvtColor(bg, cv2.COLOR_BGR2RGB)).convert("RGBA")
+    """Soft spotlight sky-blue studio background using pure Pillow/Numpy"""
+    y_coords, x_coords = np.ogrid[:h, :w]
+    cx, cy = w / 2.0, h * 0.38
+    dist = np.sqrt((x_coords - cx)**2 + (y_coords - cy)**2) / (w * 0.8)
+    factor = np.clip(dist, 0.0, 1.0)
+    
+    # Bright studio sky-blue center (165, 202, 245) to edge (125, 168, 225)
+    r = (165 * (1 - factor) + 125 * factor).astype(np.uint8)
+    g = (202 * (1 - factor) + 168 * factor).astype(np.uint8)
+    b = (245 * (1 - factor) + 225 * factor).astype(np.uint8)
+    
+    arr = np.dstack((r, g, b, np.full((h, w), 255, dtype=np.uint8)))
+    return Image.fromarray(arr, mode="RGBA")
 
-def smart_face_crop(pil_img, cutout_pil):
-    """Face detect karke exact photo studio jaisa crop aur center karna"""
-    cv_img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
-    gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
+def perfect_passport_centering(cutout_img, target_w=413, target_h=531):
+    """Person ko detect karke exact photo studio jaisa centered passport crop karna"""
+    bbox = cutout_img.getbbox()
+    if not bbox:
+        return cutout_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
     
-    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(60, 60))
+    bx0, by0, bx1, by1 = bbox
+    person_w = bx1 - bx0
+    person_h = by1 - by0
     
-    img_w, img_h = pil_img.size
-    target_w, target_h = 413, 531
     aspect = target_w / target_h
     
-    if len(faces) > 0:
-        # Sabse bada chehra select karein
-        fx, fy, fw, fh = max(faces, key=lambda f: f[2] * f[3])
-        face_cx = fx + fw // 2
-        
-        # Passport standards: Head height photo ki lagbhag 50-55% honi chahiye
-        crop_h = int(fh / 0.52)
-        crop_w = int(crop_h * aspect)
-        
-        # Sir ke upar standard 15% studio gap
-        top = int(fy - (crop_h * 0.16))
-        left = int(face_cx - (crop_w // 2))
-        
-        # Bounds checking
-        if crop_w > img_w:
-            crop_w = img_w
-            crop_h = int(crop_w / aspect)
-            left = 0
-            top = max(0, fy - int(crop_h * 0.15))
-        else:
-            left = max(0, min(left, img_w - crop_w))
-            top = max(0, min(top, img_h - crop_h))
-            
-        cropped = cutout_pil.crop((left, top, left + crop_w, top + crop_h))
+    # Passport standard: Sir se chhati (chest) tak ka hissa photo ka 78% cover kare
+    crop_h = int(person_h * 0.90)
+    crop_w = int(crop_h * aspect)
+    
+    # Center horizontally on the person
+    person_cx = (bx0 + bx1) // 2
+    left = person_cx - (crop_w // 2)
+    # Head ke upar standard 10% studio gap
+    top = by0 - int(person_h * 0.08)
+    
+    # Agar boundary se bahar jaye toh adjust karein
+    if crop_w > cutout_img.width:
+        crop_w = cutout_img.width
+        crop_h = int(crop_w / aspect)
+        left = 0
+        top = by0 - int(person_h * 0.05)
     else:
-        # Fallback agar face sideways ho
-        bbox = cutout_pil.getbbox()
-        if bbox:
-            bx0, by0, bx1, by1 = bbox
-            bw, bh = bx1 - bx0, by1 - by0
-            crop_h = int(bh * 1.1)
-            crop_w = int(crop_h * aspect)
-            left = max(0, (bx0 + bx1)//2 - crop_w // 2)
-            top = max(0, by0 - int(bh * 0.08))
-            cropped = cutout_pil.crop((left, top, min(img_w, left + crop_w), min(img_h, top + crop_h)))
-        else:
-            cropped = cutout_pil
-            
+        left = max(0, min(left, cutout_img.width - crop_w))
+        top = max(0, min(top, cutout_img.height - crop_h))
+        
+    cropped = cutout_img.crop((left, top, left + crop_w, top + crop_h))
     return cropped.resize((target_w, target_h), Image.Resampling.LANCZOS)
 
 st.write("### 1️⃣ Target Photo Upload")
@@ -118,24 +100,24 @@ with col2:
 
 if uploaded_photo:
     if st.button("⚡ GENERATE STUDIO PASSPORT PHOTO NOW", type="primary", use_container_width=True):
-        with st.spinner("Face detect karke Studio Passport Photo banayi ja rahi hai..."):
+        with st.spinner("AI photo process karke perfect studio framing me convert kar raha hai..."):
             try:
                 raw_img = Image.open(uploaded_photo).convert("RGB")
                 
-                # 1. Subtle lighting boost
-                enh_bright = ImageEnhance.Brightness(raw_img).enhance(1.05)
-                enh_contrast = ImageEnhance.Contrast(enh_bright).enhance(1.05)
-                enh_sharp = ImageEnhance.Sharpness(enh_contrast).enhance(1.20)
+                # 1. Natural Studio Color & Light Polish
+                bright = ImageEnhance.Brightness(raw_img).enhance(1.06)
+                contrast = ImageEnhance.Contrast(bright).enhance(1.05)
+                sharp = ImageEnhance.Sharpness(contrast).enhance(1.20)
                 
-                # 2. Background removal
-                cutout_pil = remove(enh_sharp, session=session).convert("RGBA")
+                # 2. Free AI Background Removal
+                cutout_pil = remove(sharp, session=session).convert("RGBA")
                 
-                # 3. Exact Face Centering & Passport Cropping
-                person_cropped = smart_face_crop(raw_img, cutout_pil)
+                # 3. Smart Centering & Passport Framing (Side khaalipan khatam)
+                person_centered = perfect_passport_centering(cutout_pil, 413, 531)
                 
-                # 4. Studio Vignette Gradient Background (413 x 531)
+                # 4. Studio Soft Gradient Background (413 x 531)
                 bg = create_studio_gradient_bg(413, 531)
-                composed = Image.alpha_composite(bg, person_cropped).convert("RGB")
+                composed = Image.alpha_composite(bg, person_centered).convert("RGB")
                 
                 # 5. Signature Overlay
                 draw = ImageDraw.Draw(composed)
@@ -144,7 +126,7 @@ if uploaded_photo:
                         font = ImageFont.truetype("DejaVuSans-Bold.ttf", 26)
                     except Exception:
                         font = ImageFont.load_default()
-                    draw.text((115, 410), typed_sig.strip(), fill=(15, 15, 15), font=font)
+                    draw.text((115, 410), typed_sig.strip(), fill=(20, 20, 20), font=font)
                     
                 elif sig_mode == "📷 Upload Signature Photo" and sig_file:
                     sig_img = Image.open(sig_file).convert("L")
@@ -179,5 +161,5 @@ if uploaded_photo:
                     mime="image/jpeg",
                     use_container_width=True
                 )
-            except Exception as e:
-                st.error(f"Error: {repr(e)}")
+            except Exception as ex:
+                st.error(f"Error: {repr(ex)}")
