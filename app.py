@@ -1,12 +1,12 @@
 import streamlit as st
-from PIL import Image, ImageDraw, ImageEnhance, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageOps
 import io
+import cv2
 import numpy as np
 from rembg import remove, new_session
 
 st.set_page_config(page_title="Studio Passport AI Maker", page_icon="📸", layout="centered")
 
-# --- 🔒 PASSCODE ---
 ACCESS_CODE = "1234"
 
 if "unlocked" not in st.session_state:
@@ -26,7 +26,7 @@ if not st.session_state.unlocked:
 st.markdown("""
     <h2 style='text-align: center; color: #0d6efd;'>📸 Studio Passport Photo AI Maker</h2>
     <p style='text-align: center; color: gray; font-size: 13px;'>
-    100% Free • Perfect Passport Framing • Natural Studio Lighting • Auto Sign Transparent
+    Auto Face Centering • Studio Lighting • Cursive Signature • Zero Billing
     </p>
 """, unsafe_allow_html=True)
 
@@ -36,129 +36,134 @@ def load_session():
 
 session = load_session()
 
-def natural_studio_lighting(pil_img):
-    """Natural studio strobe-light balancing without dark or cartoonish artifacts"""
-    # 1. Chehre ki lighting balance (Shadow lift bina saturation jalaye)
-    bright = ImageEnhance.Brightness(pil_img).enhance(1.06)
-    # 2. Gentle contrast taaki natural depth bani rahe
-    contrast = ImageEnhance.Contrast(bright).enhance(1.04)
-    # 3. Clean portrait sharpness (eyes, hair, lips crisp karne ke liye)
-    sharp = ImageEnhance.Sharpness(contrast).enhance(1.20)
-    # 4. Subtle color vibrancy
-    color = ImageEnhance.Color(sharp).enhance(1.02)
-    return color
+def create_studio_gradient_bg(w, h):
+    """Studio soft spotlight sky-blue background"""
+    bg = np.zeros((h, w, 3), dtype=np.uint8)
+    center_x, center_y = w // 2, int(h * 0.40)
+    for y in range(h):
+        for x in range(w):
+            dist = np.sqrt((x - center_x)**2 + (y - center_y)**2) / (w * 0.75)
+            factor = min(1.0, dist)
+            # Center bright sky-blue to edges royal-blue
+            r = int(160 * (1 - factor) + 115 * factor)
+            g = int(195 * (1 - factor) + 160 * factor)
+            b = int(240 * (1 - factor) + 215 * factor)
+            bg[y, x] = [b, g, r]
+    return Image.fromarray(cv2.cvtColor(bg, cv2.COLOR_BGR2RGB)).convert("RGBA")
 
-def process_signature(sig_bytes, target_w=190):
-    """Kagaz ka background remove karke sirf dark ink sign nikalna"""
-    sig_img = Image.open(io.BytesIO(sig_bytes)).convert("L")
-    sig_img = ImageOps.autocontrast(sig_img, cutoff=2)
-    np_img = np.array(sig_img)
+def smart_face_crop(pil_img, cutout_pil):
+    """Face detect karke exact photo studio jaisa crop aur center karna"""
+    cv_img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+    gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
     
-    # Paper threshold
-    threshold = 175
-    alpha = np.where(np_img < threshold, 255, 0).astype(np.uint8)
+    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(60, 60))
     
-    h, w = np_img.shape
-    rgba = np.zeros((h, w, 4), dtype=np.uint8)
-    rgba[:, :, 0] = 10
-    rgba[:, :, 1] = 10
-    rgba[:, :, 2] = 10
-    rgba[:, :, 3] = alpha
+    img_w, img_h = pil_img.size
+    target_w, target_h = 413, 531
+    aspect = target_w / target_h
     
-    clean_sig = Image.fromarray(rgba, mode="RGBA")
-    bbox = clean_sig.getbbox()
-    if bbox:
-        clean_sig = clean_sig.crop(bbox)
+    if len(faces) > 0:
+        # Sabse bada chehra select karein
+        fx, fy, fw, fh = max(faces, key=lambda f: f[2] * f[3])
+        face_cx = fx + fw // 2
         
-    aspect = clean_sig.height / clean_sig.width
-    sw = target_w
-    sh = int(target_w * aspect)
-    if sh > 75:
-        sh = 75
-        sw = int(sh / aspect)
+        # Passport standards: Head height photo ki lagbhag 50-55% honi chahiye
+        crop_h = int(fh / 0.52)
+        crop_w = int(crop_h * aspect)
         
-    return clean_sig.resize((sw, sh), Image.Resampling.LANCZOS)
+        # Sir ke upar standard 15% studio gap
+        top = int(fy - (crop_h * 0.16))
+        left = int(face_cx - (crop_w // 2))
+        
+        # Bounds checking
+        if crop_w > img_w:
+            crop_w = img_w
+            crop_h = int(crop_w / aspect)
+            left = 0
+            top = max(0, fy - int(crop_h * 0.15))
+        else:
+            left = max(0, min(left, img_w - crop_w))
+            top = max(0, min(top, img_h - crop_h))
+            
+        cropped = cutout_pil.crop((left, top, left + crop_w, top + crop_h))
+    else:
+        # Fallback agar face sideways ho
+        bbox = cutout_pil.getbbox()
+        if bbox:
+            bx0, by0, bx1, by1 = bbox
+            bw, bh = bx1 - bx0, by1 - by0
+            crop_h = int(bh * 1.1)
+            crop_w = int(crop_h * aspect)
+            left = max(0, (bx0 + bx1)//2 - crop_w // 2)
+            top = max(0, by0 - int(bh * 0.08))
+            cropped = cutout_pil.crop((left, top, min(img_w, left + crop_w), min(img_h, top + crop_h)))
+        else:
+            cropped = cutout_pil
+            
+    return cropped.resize((target_w, target_h), Image.Resampling.LANCZOS)
 
-st.write("### 1️⃣ Target Photo (Gallery ya Camera)")
-photo_mode = st.radio("Source Photo:", ["📁 Gallery Upload", "📷 Live Camera"], horizontal=True)
+st.write("### 1️⃣ Target Photo Upload")
+uploaded_photo = st.file_uploader("Passport ke liye photo dalein", type=["jpg", "jpeg", "png", "webp"])
 
-final_image_data = None
-if photo_mode == "📁 Gallery Upload":
-    uploaded_photo = st.file_uploader("Passport ke liye photo select karein", type=["jpg", "jpeg", "png", "webp"])
-    if uploaded_photo:
-        final_image_data = uploaded_photo.read()
-else:
-    camera_photo = st.camera_input("Camera se click karein")
-    if camera_photo:
-        final_image_data = camera_photo.read()
+st.write("### 2️⃣ Signature Settings")
+col1, col2 = st.columns(2)
+with col1:
+    sig_mode = st.radio("Signature Type:", ["✏️ Typed Cursive Name", "📷 Upload Signature Photo", "❌ No Signature"], index=0)
+with col2:
+    if sig_mode == "✏️ Typed Cursive Name":
+        typed_sig = st.text_input("Signature Name:", value="Pankaj Yadav")
+    elif sig_mode == "📷 Upload Signature Photo":
+        sig_file = st.file_uploader("Kagaz par sign ki hui photo", type=["jpg", "png", "jpeg"])
 
-st.write("---")
-st.write("### 2️⃣ Signature Photo (Optional)")
-uploaded_sign = st.file_uploader("Kagaz par kiye sign ki photo dalein (Agar lagana ho toh)", type=["jpg", "jpeg", "png", "webp"])
-
-if final_image_data:
+if uploaded_photo:
     if st.button("⚡ GENERATE STUDIO PASSPORT PHOTO NOW", type="primary", use_container_width=True):
-        with st.spinner("Passport Photo Taiyaar Ho Rahi Hai..."):
+        with st.spinner("Face detect karke Studio Passport Photo banayi ja rahi hai..."):
             try:
-                raw_img = Image.open(io.BytesIO(final_image_data)).convert("RGB")
+                raw_img = Image.open(uploaded_photo).convert("RGB")
                 
-                # 1. Natural Studio Face Balancing
-                studio_face = natural_studio_lighting(raw_img)
+                # 1. Subtle lighting boost
+                enh_bright = ImageEnhance.Brightness(raw_img).enhance(1.05)
+                enh_contrast = ImageEnhance.Contrast(enh_bright).enhance(1.05)
+                enh_sharp = ImageEnhance.Sharpness(enh_contrast).enhance(1.20)
                 
-                # 2. AI Background Removal (Free Local Micro Model)
-                cutout_pil = remove(studio_face, session=session).convert("RGBA")
+                # 2. Background removal
+                cutout_pil = remove(enh_sharp, session=session).convert("RGBA")
                 
-                # 3. Person ke actual bounds nikalna (Head aur Shoulders ka bbox)
-                bbox = cutout_pil.getbbox()
-                if bbox:
-                    # Bounding box ke hisaab se crop taaki sir ke upar faltu jagah na bache
-                    bx0, by0, bx1, by1 = bbox
-                    person_w = bx1 - bx0
-                    person_h = by1 - by0
-                    
-                    # Passport ratio target: 413 x 531
-                    target_w, target_h = 413, 531
-                    
-                    # Ideal passport: Person height photo ka lagbhag 80-85% cover kare
-                    crop_h = int(person_h / 0.82)
-                    crop_w = int(crop_h * (target_w / target_h))
-                    
-                    # Center around the person horizontally
-                    center_x = (bx0 + bx1) // 2
-                    left = max(0, center_x - crop_w // 2)
-                    top = max(0, by0 - int(person_h * 0.10)) # Sir ke upar standard 10% studio space
-                    
-                    # Agar image bounds se bahar jaye toh adjust karein
-                    if left + crop_w > cutout_pil.width:
-                        left = max(0, cutout_pil.width - crop_w)
-                    if top + crop_h > cutout_pil.height:
-                        crop_h = cutout_pil.height - top
-                        crop_w = int(crop_h * (target_w / target_h))
-                        
-                    cropped_cutout = cutout_pil.crop((left, top, left + crop_w, top + crop_h))
-                else:
-                    cropped_cutout = cutout_pil
-                    
-                # Resize to standard passport dimensions (3.5cm x 4.5cm @ 300 DPI)
-                cropped_cutout = cropped_cutout.resize((413, 531), Image.Resampling.LANCZOS)
+                # 3. Exact Face Centering & Passport Cropping
+                person_cropped = smart_face_crop(raw_img, cutout_pil)
                 
-                # 4. Solid Studio Sky-Blue Background (RGB: 135, 180, 235)
-                bg = Image.new("RGBA", (413, 531), (135, 180, 235, 255))
-                composed = Image.alpha_composite(bg, cropped_cutout).convert("RGB")
+                # 4. Studio Vignette Gradient Background (413 x 531)
+                bg = create_studio_gradient_bg(413, 531)
+                composed = Image.alpha_composite(bg, person_cropped).convert("RGB")
                 
-                # 5. Signature Overlay (Sirf tabhi aayega jab user upload karega)
-                if uploaded_sign:
-                    try:
-                        clean_sig = process_signature(uploaded_sign.read(), target_w=190)
-                        sig_x = int((413 - clean_sig.width) / 2)
-                        sig_y = int(531 * 0.74) # Lower chest area
-                        composed.paste(clean_sig, (sig_x, sig_y), clean_sig)
-                    except Exception as sig_err:
-                        st.warning(f"Signature process nahi ho paya: {sig_err}")
-                
-                # 6. Clean Thin Studio White Border
+                # 5. Signature Overlay
                 draw = ImageDraw.Draw(composed)
-                draw.rectangle([(0, 0), (412, 530)], outline="white", width=5)
+                if sig_mode == "✏️ Typed Cursive Name" and typed_sig.strip():
+                    try:
+                        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 26)
+                    except Exception:
+                        font = ImageFont.load_default()
+                    draw.text((115, 410), typed_sig.strip(), fill=(15, 15, 15), font=font)
+                    
+                elif sig_mode == "📷 Upload Signature Photo" and sig_file:
+                    sig_img = Image.open(sig_file).convert("L")
+                    sig_img = ImageOps.autocontrast(sig_img, cutoff=2)
+                    np_sig = np.array(sig_img)
+                    alpha = np.where(np_sig < 175, 255, 0).astype(np.uint8)
+                    h, w = np_sig.shape
+                    rgba = np.zeros((h, w, 4), dtype=np.uint8)
+                    rgba[:, :, :3] = 15
+                    rgba[:, :, 3] = alpha
+                    clean_sig = Image.fromarray(rgba, mode="RGBA")
+                    bbox = clean_sig.getbbox()
+                    if bbox:
+                        clean_sig = clean_sig.crop(bbox)
+                    clean_sig = clean_sig.resize((170, int(170 * clean_sig.height / clean_sig.width)), Image.Resampling.LANCZOS)
+                    composed.paste(clean_sig, (120, 410), clean_sig)
+
+                # 6. Rounded White Border
+                draw.rounded_rectangle([(6, 6), (406, 524)], radius=12, outline="white", width=4)
                 
                 buf = io.BytesIO()
                 composed.save(buf, format="JPEG", quality=98)
@@ -174,5 +179,5 @@ if final_image_data:
                     mime="image/jpeg",
                     use_container_width=True
                 )
-            except Exception as ex:
-                st.error(f"Error: {repr(ex)}")
+            except Exception as e:
+                st.error(f"Error: {repr(e)}")
