@@ -2,3 +2,4 @@ streamlit
 pillow
 rembg[cpu]
 onnxruntime
+numpy
