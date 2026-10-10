@@ -1,203 +1,142 @@
 import streamlit as st
-from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageOps, ImageFilter
-import io
-import urllib.request
+import cv2
 import numpy as np
-from rembg import remove, new_session
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+from rembg import remove
+import io
 
-st.set_page_config(page_title="Professional Passport Maker", page_icon="📸", layout="centered")
+st.set_page_config(page_title="Pro Passport Photo Maker", layout="centered")
 
-# --- 🔒 PASSCODE ---
-ACCESS_CODE = "1234"
-if "unlocked" not in st.session_state:
-    st.session_state.unlocked = False
-
-if not st.session_state.unlocked:
-    st.subheader("🔒 Secure Entry")
-    entered_code = st.text_input("Enter Passcode:", type="password")
-    if st.button("Unlock App", type="primary", use_container_width=True):
-        if entered_code == ACCESS_CODE:
-            st.session_state.unlocked = True
-            st.rerun()
-        else:
-            st.error("Wrong passcode!")
-    st.stop()
-
-st.markdown("""
-    <h2 style='text-align: center; color: #0d6efd;'>📸 Passport Photo & Sign Maker</h2>
-    <p style='text-align: center; color: gray; font-size: 14px;'>
-    Auto-Crop • Studio Lighting • White Border • Perfect Signature Overlay
-    </p>
-""", unsafe_allow_html=True)
-
-# 1. Load Background Removal Model Fast
-@st.cache_resource
-def load_session():
-    return new_session("silueta")
-session = load_session()
-
-# 2. Load Stylish Cursive Font for Signature
-@st.cache_resource
-def get_signature_font():
-    font_path = "cursive_font.ttf"
-    try:
-        # AlexBrush gives a beautiful natural cursive look
-        url = "https://github.com/google/fonts/raw/main/ofl/alexbrush/AlexBrush-Regular.ttf"
-        urllib.request.urlretrieve(url, font_path)
-        return ImageFont.truetype(font_path, 48) # Font size for signature
-    except Exception:
-        try:
-            return ImageFont.truetype("DejaVuSans-Bold.ttf", 26)
-        except Exception:
-            return ImageFont.load_default()
-cursive_font = get_signature_font()
-
-# 3. Studio Lighting (Face Glow)
-def apply_studio_glow(pil_img):
-    """Brightens face and adds crisp studio quality"""
-    arr = np.array(pil_img).astype(np.float32) / 255.0
-    arr = np.power(arr, 0.82) # Lift shadows
-    arr = np.clip((arr - 0.5) * 1.08 + 0.52, 0.0, 1.0) # Contrast
-    base_img = Image.fromarray((arr * 255).astype(np.uint8))
+def enhance_image_like_remini(image):
+    # PIL to OpenCV format
+    img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
     
-    sharp = base_img.filter(ImageFilter.UnsharpMask(radius=1.5, percent=130, threshold=3))
-    return ImageEnhance.Color(sharp).enhance(1.05)
+    # 1. Smooth skin but keep edges sharp (Glow & Smoothness)
+    smooth = cv2.bilateralFilter(img_cv, d=9, sigmaColor=75, sigmaSpace=75)
+    
+    # 2. Enhance Contrast and Brightness (CLAHE)
+    lab = cv2.cvtColor(smooth, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8,8))
+    cl = clahe.apply(l)
+    limg = cv2.merge((cl,a,b))
+    enhanced_cv = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+    
+    # 3. Slight Saturation boost for that fresh look
+    hsv = cv2.cvtColor(enhanced_cv, cv2.COLOR_BGR2HSV)
+    h, s, v = cv2.split(hsv)
+    s = cv2.add(s, 15) # Boost color slightly
+    final_hsv = cv2.merge((h, s, v))
+    final_cv = cv2.cvtColor(final_hsv, cv2.COLOR_HSV2RGB)
+    
+    return Image.fromarray(final_cv)
 
-# 4. Perfect Sky-Blue Background
-def create_studio_bg(w, h):
-    y_coords, x_coords = np.ogrid[:h, :w]
-    cx, cy = w / 2.0, h * 0.4
-    dist = np.sqrt((x_coords - cx)**2 + (y_coords - cy)**2) / (w * 0.9)
-    factor = np.clip(dist, 0.0, 1.0)
+def process_background_and_border(image, bg_color=(100, 175, 230)):
+    # Remove Background
+    img_byte_arr = io.BytesIO()
+    image.save(img_byte_arr, format='PNG')
+    output_byte_arr = remove(img_byte_arr.getvalue())
+    fg_img = Image.open(io.BytesIO(output_byte_arr)).convert("RGBA")
     
-    r = (145 * (1 - factor) + 110 * factor).astype(np.uint8)
-    g = (195 * (1 - factor) + 160 * factor).astype(np.uint8)
-    b = (245 * (1 - factor) + 230 * factor).astype(np.uint8)
+    # Create Blue Background
+    bg = Image.new("RGBA", fg_img.size, bg_color + (255,))
+    bg.paste(fg_img, (0, 0), fg_img)
     
-    arr = np.dstack((r, g, b, np.full((h, w), 255, dtype=np.uint8)))
-    return Image.fromarray(arr, mode="RGBA")
+    # Add White Border (Inset)
+    final_img = bg.convert("RGB")
+    draw = ImageDraw.Draw(final_img)
+    border_width = int(final_img.width * 0.03)
+    draw.rectangle(
+        [border_width, border_width, final_img.width - border_width, final_img.height - border_width],
+        outline="white", width=border_width
+    )
+    return final_img
 
-# 5. Exact Passport Size Crop (Chest Up)
-def exact_passport_crop(cutout_img, target_w=413, target_h=531):
-    """Ensure person is centered and cropped to exact 3.5x4.5 ratio"""
-    bbox = cutout_img.getbbox()
-    if not bbox:
-        return cutout_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+def process_signature_image(sig_image):
+    # Convert signature to grayscale and remove white background
+    sig_cv = cv2.cvtColor(np.array(sig_image), cv2.COLOR_RGB2GRAY)
     
-    bx0, by0, bx1, by1 = bbox
-    person_w = bx1 - bx0
-    person_h = by1 - by0
-    aspect = target_w / target_h
+    # Thresholding to extract black ink only
+    _, thresh = cv2.threshold(sig_cv, 150, 255, cv2.THRESH_BINARY_INV)
     
-    # Force crop box to passport aspect ratio
-    crop_h = int(person_h * 0.85) # Frame chest up
-    crop_w = int(crop_h * aspect)
+    # Make signature bolder
+    kernel = np.ones((2,2), np.uint8)
+    bold_sig = cv2.dilate(thresh, kernel, iterations=1)
     
-    person_cx = (bx0 + bx1) // 2
-    left = person_cx - (crop_w // 2)
-    top = by0 - int(person_h * 0.06) # Space above head
+    # Convert back to RGBA for transparent overlay
+    h, w = bold_sig.shape
+    rgba_sig = np.zeros((h, w, 4), dtype=np.uint8)
+    rgba_sig[..., 3] = bold_sig # Alpha channel
+    rgba_sig[..., 0:3] = 0 # Black color for signature
     
-    # Check boundaries
-    if crop_w > cutout_img.width:
-        crop_w = cutout_img.width
-        crop_h = int(crop_w / aspect)
-        left = 0
-        top = by0 - int(person_h * 0.03)
-    else:
-        left = max(0, min(left, cutout_img.width - crop_w))
-        top = max(0, min(top, cutout_img.height - crop_h))
-        
-    cropped = cutout_img.crop((left, top, left + crop_w, top + crop_h))
-    # Final resize to standard pixel dimensions (413x531)
-    return cropped.resize((target_w, target_h), Image.Resampling.LANCZOS)
+    return Image.fromarray(rgba_sig)
 
-st.write("### 1️⃣ Target Photo Upload")
-uploaded_photo = st.file_uploader("Select Photo for Passport:", type=["jpg", "jpeg", "png", "webp"])
+st.title("📸 Pro Passport & Sign Generator")
+st.write("Apne cafe ke liye HD Passport photos banayein (Auto Enhance, Blue BG, White Border & Signature)")
 
-st.write("### 2️⃣ Signature Settings")
 col1, col2 = st.columns(2)
+
 with col1:
-    sig_mode = st.radio("Signature Style:", ["✏️ Typed Cursive", "📷 Upload Signature Photo", "❌ No Signature"], index=0)
+    st.subheader("1. Photo Upload")
+    uploaded_photo = st.file_uploader("Upload Person Photo", type=['jpg', 'jpeg', 'png'])
+
 with col2:
-    if sig_mode == "✏️ Typed Cursive":
-        typed_sig = st.text_input("Enter Name:", value="Pankaj Yadav")
-    elif sig_mode == "📷 Upload Signature Photo":
-        sig_file = st.file_uploader("Upload Paper Signature", type=["jpg", "png", "jpeg"])
+    st.subheader("2. Signature Upload / Text")
+    sig_option = st.radio("Signature Format:", ["Image Upload", "Type Text"])
+    
+    uploaded_sig = None
+    sig_text = ""
+    if sig_option == "Image Upload":
+        uploaded_sig = st.file_uploader("Upload Signature", type=['jpg', 'jpeg', 'png'])
+    else:
+        sig_text = st.text_input("Enter Name for Signature (Cursive):", "Pankaj Yadav")
 
-if uploaded_photo:
-    if st.button("⚡ GENERATE FINAL PASSPORT PHOTO", type="primary", use_container_width=True):
-        with st.spinner("Processing image to exact passport standards..."):
-            try:
-                raw_img = Image.open(uploaded_photo).convert("RGB")
+if uploaded_photo is not None:
+    original_img = Image.open(uploaded_photo)
+    st.image(original_img, caption="Original Photo", use_column_width=True)
+    
+    if st.button("Generate HD Passport Photo"):
+        with st.spinner("Enhancing and Processing..."):
+            # Step 1: Enhance Image (Glow & Smooth)
+            enhanced_img = enhance_image_like_remini(original_img)
+            
+            # Step 2: Remove BG, Add Blue color & White Border
+            passport_img = process_background_and_border(enhanced_img)
+            
+            # Step 3: Add Signature
+            if sig_option == "Image Upload" and uploaded_sig is not None:
+                sig_img = Image.open(uploaded_sig)
+                processed_sig = process_signature_image(sig_img)
                 
-                # A) Face Glow & Enhancement
-                glowing_face = apply_studio_glow(raw_img)
+                # Resize signature to fit bottom
+                sig_width = int(passport_img.width * 0.7)
+                sig_ratio = sig_width / float(processed_sig.width)
+                sig_height = int(float(processed_sig.height) * float(sig_ratio))
+                processed_sig = processed_sig.resize((sig_width, sig_height), Image.LANCZOS)
                 
-                # B) Remove Background
-                cutout_pil = remove(glowing_face, session=session).convert("RGBA")
+                # Paste at bottom center
+                x = (passport_img.width - processed_sig.width) // 2
+                y = passport_img.height - processed_sig.height - 20
+                passport_img.paste(processed_sig, (x, y), processed_sig)
                 
-                # C) Exact Passport Size Crop (Crucial step for shape)
-                # Standard size: 413x531 pixels (approx 3.5cm x 4.5cm at 300dpi)
-                final_w, final_h = 413, 531
-                person_cropped = exact_passport_crop(cutout_pil, final_w, final_h)
+            elif sig_option == "Type Text" and sig_text:
+                draw = ImageDraw.Draw(passport_img)
+                # Note: Aapko ek cursive TTF font download karke yahan path dena hoga
+                try:
+                    font = ImageFont.truetype("BrushScriptMT.ttf", int(passport_img.width * 0.1))
+                except:
+                    font = ImageFont.load_default() # Fallback
                 
-                # D) Add Blue Background
-                bg = create_studio_bg(final_w, final_h)
-                composed = Image.alpha_composite(bg, person_cropped).convert("RGB")
-                
-                draw = ImageDraw.Draw(composed)
-                
-                # E) Add Signature Overlay correctly
-                if sig_mode == "✏️ Typed Cursive" and typed_sig.strip():
-                    # Center the text at the bottom chest area
-                    bbox = draw.textbbox((0, 0), typed_sig.strip(), font=cursive_font)
-                    text_w = bbox[2] - bbox[0]
-                    text_x = (final_w - text_w) // 2
-                    text_y = int(final_h * 0.80) # Placing nicely on the chest
-                    draw.text((text_x, text_y), typed_sig.strip(), fill=(15, 15, 15), font=cursive_font)
-                    
-                elif sig_mode == "📷 Upload Signature Photo" and sig_file:
-                    sig_img = Image.open(sig_file).convert("L")
-                    sig_img = ImageOps.autocontrast(sig_img, cutoff=2)
-                    np_sig = np.array(sig_img)
-                    alpha = np.where(np_sig < 175, 255, 0).astype(np.uint8)
-                    rgba = np.zeros((np_sig.shape[0], np_sig.shape[1], 4), dtype=np.uint8)
-                    rgba[:, :, :3] = 15 # Dark ink color
-                    rgba[:, :, 3] = alpha
-                    clean_sig = Image.fromarray(rgba, mode="RGBA")
-                    
-                    bbox = clean_sig.getbbox()
-                    if bbox:
-                        clean_sig = clean_sig.crop(bbox)
-                        
-                    # Resize signature properly to fit inside photo width
-                    sig_target_w = 200
-                    sig_target_h = int(sig_target_w * clean_sig.height / clean_sig.width)
-                    clean_sig = clean_sig.resize((sig_target_w, sig_target_h), Image.Resampling.LANCZOS)
-                    
-                    sig_x = (final_w - clean_sig.width) // 2
-                    sig_y = int(final_h * 0.78)
-                    composed.paste(clean_sig, (sig_x, sig_y), clean_sig)
+                # Calculate text size (approximate center)
+                x = passport_img.width // 4
+                y = passport_img.height - int(passport_img.height * 0.15)
+                draw.text((x, y), sig_text, fill="black", font=font)
 
-                # F) Add White Rounded Inner Border (Crucial for the classic look)
-                draw.rounded_rectangle([(8, 8), (final_w - 8, final_h - 8)], radius=12, outline="white", width=4)
-                
-                # Output Preparation
-                buf = io.BytesIO()
-                composed.save(buf, format="JPEG", quality=98)
-                out_bytes = buf.getvalue()
-                
-                st.success("✅ Studio Passport Photo Generated Successfully!")
-                
-                # Display with proper width so it looks like a passport
-                st.image(out_bytes, caption="Final Passport Preview (3.5cm x 4.5cm)", width=320)
-                
-                st.download_button(
-                    label="📥 DOWNLOAD PASSPORT PHOTO",
-                    data=out_bytes,
-                    file_name="professional_passport.jpg",
-                    mime="image/jpeg",
-                    use_container_width=True
-                )
-            except Exception as ex:
-                st.error(f"System Error: {repr(ex)}")
+            st.success("Photo Ready!")
+            st.image(passport_img, caption="Final HD Passport Photo", use_column_width=True)
+            
+            # Download Button
+            buf = io.BytesIO()
+            passport_img.save(buf, format="PNG", quality=100)
+            byte_im = buf.getvalue()
+            st.download_button(label="Download HD Photo", data=byte_im, file_name="passport_ready.png", mime="image/png")
