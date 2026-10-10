@@ -1,3 +1,4 @@
 streamlit
 pillow
-huggingface_hub
+rembg[cpu]
+onnxruntime
