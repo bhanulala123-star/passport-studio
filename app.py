@@ -1,115 +1,173 @@
 import streamlit as st
 import cv2
 import numpy as np
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageEnhance, ImageDraw
 from rembg import remove
 import io
 
-# --- Helper Functions ---
+def detect_and_crop_face(image: Image.Image, target_ratio=3/4) -> Image.Image:
+    """Detects face and crops to passport size ratio (3:4) centering the head/shoulders."""
+    cv_img = cv2.cvtColor(np.array(image.convert("RGB")), cv2.COLOR_RGB2BGR)
+    gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
+    
+    cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+    face_cascade = cv2.CascadeClassifier(cascade_path)
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(50, 50))
+    
+    img_h, img_w = cv_img.shape[:2]
+    
+    if len(faces) > 0:
+        # Get largest face
+        faces = sorted(faces, key=lambda x: x[2]*x[3], reverse=True)
+        x, y, w, h = faces[0]
+        
+        # Calculate crop area so face takes ~40-50% of the height (allowing for shoulders)
+        # Target aspect ratio is 3:4 (w:h)
+        target_h = int(h * 2.5) 
+        target_w = int(target_h * target_ratio)
+        
+        # Center crop around face
+        center_x = x + w // 2
+        center_y = y + h // 2
+        
+        # Adjust Y to leave room above head
+        crop_y1 = max(0, center_y - int(target_h * 0.45))
+        crop_y2 = crop_y1 + target_h
+        
+        crop_x1 = max(0, center_x - target_w // 2)
+        crop_x2 = crop_x1 + target_w
+        
+        # Handle out of bounds
+        if crop_y2 > img_h:
+            crop_y2 = img_h
+            crop_y1 = max(0, crop_y2 - target_h)
+        if crop_x2 > img_w:
+            crop_x2 = img_w
+            crop_x1 = max(0, crop_x2 - target_w)
+            
+        cropped_cv = cv_img[crop_y1:crop_y2, crop_x1:crop_x2]
+    else:
+        # Fallback: Center crop to 3:4 ratio if no face detected
+        target_w = min(img_w, int(img_h * target_ratio))
+        target_h = int(target_w / target_ratio)
+        x_offset = (img_w - target_w) // 2
+        y_offset = (img_h - target_h) // 2
+        cropped_cv = cv_img[y_offset:y_offset+target_h, x_offset:x_offset+target_w]
 
-def enhance_portrait(img: Image.Image) -> Image.Image:
-    """Enhance the portrait for a clean studio look."""
-    # 1. Boost Sharpness
-    enhancer = ImageEnhance.Sharpness(img)
-    img = enhancer.enhance(1.3)
-    # 2. Boost Brightness slightly
-    enhancer = ImageEnhance.Brightness(img)
-    img = enhancer.enhance(1.1)
-    # 3. Boost Contrast slightly
-    enhancer = ImageEnhance.Contrast(img)
-    img = enhancer.enhance(1.15)
-    return img
+    return Image.fromarray(cv2.cvtColor(cropped_cv, cv2.COLOR_BGR2RGB))
 
-def remove_signature_background(sig_img: Image.Image) -> Image.Image:
-    """Removes the white background from a signature, leaving only the ink."""
-    # Convert PIL Image to OpenCV format (RGBA)
-    sig_img = sig_img.convert("RGBA")
-    np_img = np.array(sig_img)
+def process_signature(sig_image: Image.Image) -> Image.Image:
+    """Removes background from signature using Otsu's thresholding, keeping only dark ink."""
+    cv_sig = cv2.cvtColor(np.array(sig_image.convert("RGB")), cv2.COLOR_RGB2BGR)
+    gray_sig = cv2.cvtColor(cv_sig, cv2.COLOR_BGR2GRAY)
     
-    # Convert to grayscale to identify white background vs dark ink
-    gray = cv2.cvtColor(np_img, cv2.COLOR_RGBA2GRAY)
+    # Apply slight blur to reduce noise
+    blurred = cv2.GaussianBlur(gray_sig, (3, 3), 0)
     
-    # Apply a threshold: pixels darker than 220 become 255 (white/solid mask), lighter become 0 (transparent)
-    _, mask = cv2.threshold(gray, 220, 255, cv2.THRESH_BINARY_INV)
+    # Otsu's thresholding (inverse so ink is white, background is black)
+    _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     
-    # Optional: Apply slight blur to the mask to anti-alias the edges of the ink
-    mask = cv2.GaussianBlur(mask, (3, 3), 0)
+    # Create an RGBA image: RGB is dark blue (#000033), Alpha is the threshold mask
+    h, w = thresh.shape
+    rgba_sig = np.zeros((h, w, 4), dtype=np.uint8)
+    rgba_sig[:, :, 0] = 0   # R
+    rgba_sig[:, :, 1] = 0   # G
+    rgba_sig[:, :, 2] = 51  # B (Dark blue ink)
+    rgba_sig[:, :, 3] = thresh # Alpha channel (ink is opaque, bg is transparent)
     
-    # Apply the calculated mask to the Alpha (transparency) channel
-    np_img[:, :, 3] = mask
-    
-    # Convert back to PIL Image
-    return Image.fromarray(np_img)
+    return Image.fromarray(rgba_sig, "RGBA")
 
-# --- Streamlit UI & Main Logic ---
-
-st.set_page_config(page_title="Self-Attested Photo Generator", layout="centered")
-
-st.title("📸 Studio Passport & Signature Attestation")
-st.write("Upload your portrait and signature to generate a self-attested studio photo with a blue background.")
-
-col1, col2 = st.columns(2)
-with col1:
-    main_upload = st.file_uploader("1. Upload Main Portrait Photo", type=["jpg", "jpeg", "png"])
-with col2:
-    sig_upload = st.file_uploader("2. Upload Signature Image", type=["jpg", "jpeg", "png"])
-
-if main_upload and sig_upload:
-    st.markdown("---")
-    st.write("### Processing...")
+def add_rounded_border(image: Image.Image, radius=20, border_width=4, color=(255, 255, 255)) -> Image.Image:
+    """Adds a rounded border to the image."""
+    mask = Image.new('L', image.size, 0)
+    draw = ImageDraw.Draw(mask)
+    draw.rounded_rectangle([(0, 0), image.size], radius=radius, fill=255)
     
-    with st.spinner("Removing background and enhancing portrait..."):
-        # 1. Load and enhance the main photo
-        main_img = Image.open(main_upload).convert("RGB")
-        main_img = enhance_portrait(main_img)
-        
-        # 2. Remove background using rembg (returns RGBA image)
-        main_no_bg = remove(main_img)
-        
-        # 3. Create a solid light blue background (standard studio passport blue)
-        # Hex: #ADD8E6 -> RGB: (173, 216, 230)
-        blue_bg = Image.new("RGB", main_no_bg.size, (173, 216, 230))
-        
-        # Paste the subject onto the blue background using the subject's alpha channel as the mask
-        blue_bg.paste(main_no_bg, (0, 0), main_no_bg)
-        final_portrait = blue_bg  # Now a solid RGB image
-        
-    with st.spinner("Processing signature and merging..."):
-        # 4. Load and process signature
-        sig_img_raw = Image.open(sig_upload)
-        sig_transparent = remove_signature_background(sig_img_raw)
-        
-        # 5. Overlaying the signature
-        # Resize signature to fit 80% of the portrait's width
-        target_width = int(final_portrait.width * 0.8)
-        aspect_ratio = sig_transparent.height / sig_transparent.width
-        target_height = int(target_width * aspect_ratio)
-        
-        # Use LANCZOS for high-quality downsampling
-        sig_resized = sig_transparent.resize((target_width, target_height), Image.Resampling.LANCZOS)
-        
-        # Calculate coordinates to place signature at the bottom center (overlapping clothing)
-        x_offset = int((final_portrait.width - target_width) / 2)
-        # 10 pixels padding from the absolute bottom edge
-        y_offset = final_portrait.height - target_height - 10 
-        
-        # Paste the transparent signature onto the portrait
-        final_portrait.paste(sig_resized, (x_offset, y_offset), sig_resized)
-        
-    st.success("Success! Image generated.")
+    # Apply rounded mask
+    rounded_img = Image.new('RGBA', image.size, (0,0,0,0))
+    rounded_img.paste(image, (0,0), mask=mask)
     
-    # --- Final Output ---
-    # use_column_width=True use kiya hai taaki Streamlit ke kisi bhi version me error na aaye
-    st.image(final_portrait, caption="Final Self-Attested Photo", use_column_width=True)
+    # Draw border
+    border_overlay = Image.new('RGBA', image.size, (0,0,0,0))
+    b_draw = ImageDraw.Draw(border_overlay)
+    b_draw.rounded_rectangle([(border_width//2, border_width//2), 
+                              (image.size[0]-border_width//2, image.size[1]-border_width//2)], 
+                             radius=radius, outline=color, width=border_width)
     
-    # Prepare image for download
-    buf = io.BytesIO()
-    final_portrait.save(buf, format="JPEG", quality=95)
-    byte_im = buf.getvalue()
-    
-    st.download_button(
-        label="⬇️ Download High-Quality Photo",
-        data=byte_im,
-        file_name="self_attested_passport.jpg",
-        mime="image/jpeg"
-    )
+    return Image.alpha_composite(rounded_img, border_overlay)
+
+def main():
+    st.title("Passport Photo & Signature Generator")
+    st.write("Upload a portrait and a signature photo to generate a formatted passport size image.")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        main_photo = st.file_uploader("Upload Main Photo", type=["jpg", "jpeg", "png"])
+    with col2:
+        sig_photo = st.file_uploader("Upload Signature Photo", type=["jpg", "jpeg", "png"])
+
+    if main_photo and sig_photo:
+        if st.button("Generate Passport Photo"):
+            with st.spinner("Processing images..."):
+                try:
+                    # 1. Load images
+                    img = Image.open(main_photo).convert("RGB")
+                    sig = Image.open(sig_photo).convert("RGB")
+                    
+                    # 2. Crop Face
+                    cropped_img = detect_and_crop_face(img)
+                    
+                    # 3. Remove Background & Composite
+                    subject_only = remove(cropped_img).convert("RGBA")
+                    
+                    # Create Pastel Blue Background (#8ECAE6)
+                    bg_color = (142, 202, 230, 255)
+                    final_bg = Image.new("RGBA", subject_only.size, bg_color)
+                    
+                    # Composite subject onto background
+                    composite = Image.alpha_composite(final_bg, subject_only)
+                    
+                    # 4. Enhance Image (Brightness & Contrast +10%)
+                    enhancer_b = ImageEnhance.Brightness(composite)
+                    composite = enhancer_b.enhance(1.10)
+                    enhancer_c = ImageEnhance.Contrast(composite)
+                    composite = enhancer_c.enhance(1.05)
+                    
+                    # 5. Process Signature
+                    transparent_sig = process_signature(sig)
+                    
+                    # Resize signature to 55% of main image width
+                    target_sig_w = int(composite.width * 0.55)
+                    sig_ratio = target_sig_w / transparent_sig.width
+                    target_sig_h = int(transparent_sig.height * sig_ratio)
+                    transparent_sig = transparent_sig.resize((target_sig_w, target_sig_h), Image.Resampling.LANCZOS)
+                    
+                    # 6. Paste Signature (Bottom center)
+                    paste_x = (composite.width - target_sig_w) // 2
+                    paste_y = composite.height - target_sig_h - 20 # 20px padding from bottom
+                    
+                    composite.paste(transparent_sig, (paste_x, paste_y), mask=transparent_sig)
+                    
+                    # 7. Add Border
+                    final_image = add_rounded_border(composite, radius=30, border_width=6)
+                    
+                    # Display Final Image
+                    st.image(final_image, caption="Final Passport Photo", use_column_width=True)
+                    
+                    # Prepare Download
+                    buf = io.BytesIO()
+                    final_image.convert("RGB").save(buf, format="JPEG", quality=95)
+                    byte_im = buf.getvalue()
+                    
+                    st.download_button(
+                        label="Download Processed Photo",
+                        data=byte_im,
+                        file_name="passport_photo.jpg",
+                        mime="image/jpeg"
+                    )
+                    
+                except Exception as e:
+                    st.error(f"An error occurred during processing: {str(e)}")
+
+if __name__ == "__main__":
+    main()
