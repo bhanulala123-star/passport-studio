@@ -10,12 +10,10 @@ import cv2
 os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
 
 def open_image(uploaded):
-    """EXIF orientation fix karke image load karna"""
     im = Image.open(uploaded)
     return ImageOps.exif_transpose(im).convert("RGB")
 
 def auto_straighten(img):
-    """Haar Cascade ka use karke face/eyes detect karna aur photo ko seedha karna"""
     try:
         gray = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
         cascade_path = os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
@@ -56,7 +54,6 @@ def auto_straighten(img):
         return img, f"Auto-straighten skipped safely: {e}"
 
 def remove_background(img):
-    """rembg ka use karke background nikalna"""
     try:
         from rembg import remove
         out = remove(img)
@@ -67,7 +64,6 @@ def remove_background(img):
         return None, f"Background removal failed: {e}"
 
 def enhance_photo(img, strength):
-    """Conservative enhancement - skin texture preserve karta hai"""
     im = ImageOps.autocontrast(img.convert("RGB"), cutoff=0.4)
     im = ImageEnhance.Color(im).enhance(1.04 + 0.08 * strength)
     im = ImageEnhance.Contrast(im).enhance(1.03 + 0.07 * strength)
@@ -76,7 +72,6 @@ def enhance_photo(img, strength):
     return im
 
 def make_studio_gradient(size, base_color):
-    """Soft light-blue studio gradient background banana"""
     W, H = int(size[0]), int(size[1])
     yy, xx = np.mgrid[0:H, 0:W]
     cx, cy = W * 0.50, H * 0.42
@@ -87,7 +82,6 @@ def make_studio_gradient(size, base_color):
     return Image.fromarray(arr, "RGB")
 
 def fit_subject_on_background(rgba, bg_color, out_size, margin=0.06):
-    """Subject ko center karke, shoulder properly fit karna"""
     W, H = int(out_size[0]), int(out_size[1])
     bg = make_studio_gradient((W, H), bg_color).convert("RGBA")
     subject = rgba.convert("RGBA")
@@ -113,7 +107,6 @@ def fit_subject_on_background(rgba, bg_color, out_size, margin=0.06):
     return bg.convert("RGB")
 
 def process_signature(upload, threshold, thickness):
-    """Signature ka background transparent banakar ink nikalna"""
     if upload is None:
         return None
     sig = Image.open(upload)
@@ -138,7 +131,6 @@ def process_signature(upload, threshold, thickness):
     return sig_out
 
 def add_border_and_signature(photo, sig_img, border_size=15, include_sig=False, strip_height=140):
-    """White border aur optional white signature strip lagana"""
     border_size = int(border_size)
     strip_height = int(strip_height)
     
@@ -186,4 +178,53 @@ def main():
             do_remove = st.checkbox("Remove Background (AI)", value=True)
             enhancement = st.slider("Enhancement Strength", 0.0, 1.0, 0.4)
         with col2:
-            out_width = int(st.number_input("Photo Width (px)", value=600, step
+            out_width = int(st.number_input("Photo Width (px)", value=600, step=50))
+            out_height = int(st.number_input("Photo Height (px)", value=800, step=50))
+            border_size = int(st.number_input("White Border Size (px)", value=15, step=5))
+            
+        st.markdown("---")
+        st.subheader("✍️ Signature Options")
+        sig_upload = st.file_uploader("Upload Signature (Optional, transparent or white bg)", type=["jpg", "jpeg", "png"])
+        inc_sig = st.checkbox("Add Signature Strip at Bottom", value=bool(sig_upload))
+        sig_thresh = st.slider("Signature Ink Threshold", 50, 250, 200)
+        
+        if st.button("Generate Passport Photo", type="primary"):
+            with st.spinner("Processing... Please wait."):
+                img = original.copy()
+                if do_straighten:
+                    img, msg = auto_straighten(img)
+                    st.toast(msg)
+                
+                bg_color = (205, 222, 238)
+                if do_remove:
+                    rgba, err = remove_background(img)
+                    if err:
+                        st.error(err)
+                        composed = img
+                    else:
+                        composed = fit_subject_on_background(rgba, bg_color, (out_width, out_height))
+                else:
+                    composed = img.resize((out_width, out_height), Image.Resampling.LANCZOS)
+                
+                enhanced = enhance_photo(composed, enhancement)
+                
+                sig_img = None
+                if sig_upload and inc_sig:
+                    sig_img = process_signature(sig_upload, sig_thresh, thickness=1)
+                
+                final = add_border_and_signature(enhanced, sig_img, border_size=border_size, include_sig=inc_sig)
+                
+                st.success("Your photo is ready!")
+                st.image(final, caption="Final Passport Photo")
+                
+                buf = io.BytesIO()
+                final.save(buf, format="PNG")
+                st.download_button(
+                    label="Download HD PNG", 
+                    data=buf.getvalue(), 
+                    file_name="passport_ready.png", 
+                    mime="image/png"
+                )
+
+if __name__ == '__main__':
+    main()
