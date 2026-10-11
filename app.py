@@ -141,7 +141,7 @@ def main():
     uploaded = st.file_uploader("Upload Portrait Photo", type=["jpg", "jpeg", "png", "webp"])
     if uploaded:
         original = open_image(uploaded)
-        st.image(original, caption="Original Upload", use_container_width=True)
+        st.image(original, caption="Original Upload", use_column_width=True)
         st.markdown("---")
         st.subheader("⚙️ Settings")
         col1, col2 = st.columns(2)
