@@ -1,18 +1,20 @@
 import streamlit as st
-import cv2
 import numpy as np
 from PIL import Image, ImageEnhance, ImageDraw
-from rembg import remove, new_session
 import io
 
-# --- PERFORMANCE OPTIMIZATION ---
-# Is cache ki wajah se AI model sirf ek baar load hoga aur app fast chalegi/hang nahi hogi
+# --- SPEED OPTIMIZATION (LAZY LOADING) ---
+# Heavy AI models ko UI load hote time block karne se rokne ke liye
 @st.cache_resource
 def get_ai_session():
+    # rembg sirf tabhi import hoga jab zaroorat hogi, isse app link instantly open hoga
+    from rembg import new_session
     return new_session("u2netp")
 
 def detect_and_crop_face(image: Image.Image, target_ratio=3/4) -> Image.Image:
     """Detects face using OpenCV Haar Cascades exactly as requested."""
+    import cv2  # Lazy import for fast initial app loading
+    
     cv_img = cv2.cvtColor(np.array(image.convert("RGB")), cv2.COLOR_RGB2BGR)
     img_h, img_w = cv_img.shape[:2]
     
@@ -69,6 +71,8 @@ def detect_and_crop_face(image: Image.Image, target_ratio=3/4) -> Image.Image:
 
 def process_signature(sig_image: Image.Image) -> Image.Image:
     """Strict background removal keeping ONLY dark ink using Otsu's thresholding."""
+    import cv2  # Lazy import
+    
     cv_sig = cv2.cvtColor(np.array(sig_image.convert("RGB")), cv2.COLOR_RGB2BGR)
     gray_sig = cv2.cvtColor(cv_sig, cv2.COLOR_BGR2GRAY)
     
@@ -124,7 +128,10 @@ def main():
         if st.button("Generate Passport Photo"):
             with st.spinner("Processing studio-quality photo..."):
                 try:
-                    # AI Session ab fast aur cached load hoga
+                    # Lazy loading rembg remove function
+                    from rembg import remove
+                    
+                    # Session loaded instantly from cache
                     ai_session = get_ai_session()
                     
                     # 1. Load and safely resize photos
