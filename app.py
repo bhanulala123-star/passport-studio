@@ -1,18 +1,20 @@
 import streamlit as st
-import cv2
 import numpy as np
 from PIL import Image, ImageEnhance, ImageDraw, ImageOps
-from rembg import remove, new_session
 import io
 
-# --- SUPERFAST OPTIMIZATION ---
-# Is caching ki wajah se lightweight AI model sirf ek baar load hoga, app bar-bar hang nahi hogi.
+# --- ULTRA-FAST LAZY LOADING OPTIMIZATION ---
+# AI Model Session cached so it loads quickly when requested, but NOT at app startup.
 @st.cache_resource
 def get_ai_session():
+    # rembg sirf yahan import hoga, top level par nahi. App instantly open hogi.
+    from rembg import new_session
     return new_session("u2netp")
 
 def detect_and_crop_face(image: Image.Image, target_ratio=3/4) -> Image.Image:
     """Aapke prompt ke anusar: Detects face using OpenCV Haar Cascades exactly as requested."""
+    import cv2  # Lazy import so app opens fast
+    
     cv_img = cv2.cvtColor(np.array(image.convert("RGB")), cv2.COLOR_RGB2BGR)
     img_h, img_w = cv_img.shape[:2]
     
@@ -69,6 +71,8 @@ def detect_and_crop_face(image: Image.Image, target_ratio=3/4) -> Image.Image:
 
 def process_signature(sig_image: Image.Image) -> Image.Image:
     """Aapke prompt ke anusar: Strict background removal keeping ONLY dark ink using Otsu's thresholding."""
+    import cv2  # Lazy import
+    
     cv_sig = cv2.cvtColor(np.array(sig_image.convert("RGB")), cv2.COLOR_RGB2BGR)
     gray_sig = cv2.cvtColor(cv_sig, cv2.COLOR_BGR2GRAY)
     
@@ -106,9 +110,7 @@ def add_rounded_border(image: Image.Image, radius=20, border_width=4, color=(255
 
 def prevent_oom_crash(img: Image.Image, max_size=600) -> Image.Image:
     """Memory fix: Image ko perfectly downscale karta hai taaki silent reload/crash na ho."""
-    # Phone ki ulti/tedhi photo ko theek karta hai
     img = ImageOps.exif_transpose(img)
-    # Fast aur memory safe resizing
     img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
     return img
 
@@ -124,9 +126,12 @@ def main():
 
     if main_photo and sig_photo:
         if st.button("Generate Passport Photo"):
-            with st.spinner("Processing studio-quality photo... (First time may take 5-10 sec)"):
+            with st.spinner("Processing studio-quality photo... (First run takes a few seconds)"):
                 try:
-                    # AI session fetch karna (cached to load instantly)
+                    # LOCAL IMPORT of heavy library: Ye app load hone ko slow nahi karega
+                    from rembg import remove
+                    
+                    # AI session fetch karna (cached to load instantly after first run)
                     ai_session = get_ai_session()
                     
                     # 1. Load and strictly safely resize photos to avoid Silent Crash
