@@ -5,6 +5,12 @@ from PIL import Image, ImageEnhance, ImageDraw
 from rembg import remove, new_session
 import io
 
+# --- PERFORMANCE OPTIMIZATION ---
+# Is cache ki wajah se AI model sirf ek baar load hoga aur app fast chalegi/hang nahi hogi
+@st.cache_resource
+def get_ai_session():
+    return new_session("u2netp")
+
 def detect_and_crop_face(image: Image.Image, target_ratio=3/4) -> Image.Image:
     """Detects face using OpenCV Haar Cascades exactly as requested."""
     cv_img = cv2.cvtColor(np.array(image.convert("RGB")), cv2.COLOR_RGB2BGR)
@@ -106,6 +112,7 @@ def prevent_oom_crash(img: Image.Image, max_size=800) -> Image.Image:
 
 def main():
     st.title("Passport Photo & Signature Generator")
+    st.write("Upload a portrait and a signature photo to generate a formatted passport size image.")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -117,8 +124,8 @@ def main():
         if st.button("Generate Passport Photo"):
             with st.spinner("Processing studio-quality photo..."):
                 try:
-                    # Initialize the 4MB lightweight model to prevent Streamlit RAM crash
-                    ai_session = new_session("u2netp")
+                    # AI Session ab fast aur cached load hoga
+                    ai_session = get_ai_session()
                     
                     # 1. Load and safely resize photos
                     img = Image.open(main_photo).convert("RGB")
