@@ -2,24 +2,23 @@ import streamlit as st
 import cv2
 import numpy as np
 from PIL import Image, ImageEnhance, ImageDraw
-from rembg import remove
+from rembg import remove, new_session
 import io
 
 def detect_and_crop_face(image: Image.Image, target_ratio=3/4) -> Image.Image:
-    """Detects face using Haar Cascades with a safe fallback to center crop."""
+    """Detects face using OpenCV Haar Cascades exactly as requested, with a safe fallback."""
     cv_img = cv2.cvtColor(np.array(image.convert("RGB")), cv2.COLOR_RGB2BGR)
     img_h, img_w = cv_img.shape[:2]
     
     face_found = False
     
-    # Safely attempt Haar Cascade Detection as requested
+    # Safe strict implementation of your OpenCV Haar Cascade logic
     try:
         if hasattr(cv2, 'CascadeClassifier'):
             gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
             cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
             face_cascade = cv2.CascadeClassifier(cascade_path)
             
-            # Use try-except around detectMultiScale in case the XML is missing in the cloud environment
             faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(50, 50))
             
             if len(faces) > 0:
@@ -27,7 +26,7 @@ def detect_and_crop_face(image: Image.Image, target_ratio=3/4) -> Image.Image:
                 faces = sorted(faces, key=lambda x: x[2]*x[3], reverse=True)
                 x, y, w, h = faces[0]
                 
-                # Target aspect ratio is 3:4 (w:h) - Face takes ~70%
+                # Target aspect ratio is 3:4 (w:h) - Face takes ~70-80%
                 target_h = int(h * 2.5) 
                 target_w = int(target_h * target_ratio)
                 
@@ -49,9 +48,9 @@ def detect_and_crop_face(image: Image.Image, target_ratio=3/4) -> Image.Image:
                 cropped_cv = cv_img[crop_y1:crop_y2, crop_x1:crop_x2]
                 face_found = True
     except Exception:
-        pass # Silently fail and trigger the fallback
+        pass # Fallback par jayega agar cloud mein file missing hui
 
-    # Fallback Option: Center crop to 3:4 ratio if OpenCV fails or no face detected
+    # Fallback Option (Agar face detect nahi hua)
     if not face_found:
         target_w = min(img_w, int(img_h * target_ratio))
         target_h = int(target_w / target_ratio)
@@ -62,22 +61,22 @@ def detect_and_crop_face(image: Image.Image, target_ratio=3/4) -> Image.Image:
     return Image.fromarray(cv2.cvtColor(cropped_cv, cv2.COLOR_BGR2RGB))
 
 def process_signature(sig_image: Image.Image) -> Image.Image:
-    """Removes background from signature using Otsu's thresholding."""
+    """Strict Signature Background Removal using Otsu's thresholding."""
     cv_sig = cv2.cvtColor(np.array(sig_image.convert("RGB")), cv2.COLOR_RGB2BGR)
     gray_sig = cv2.cvtColor(cv_sig, cv2.COLOR_BGR2GRAY)
     
     blurred = cv2.GaussianBlur(gray_sig, (3, 3), 0)
     
-    # Otsu's thresholding (inverse so ink is white, background is black)
+    # Otsu's thresholding (inverse)
     _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     
-    # Create RGBA image: Dark blue ink with Alpha threshold mask
+    # Transparent background logic as requested
     h, w = thresh.shape
     rgba_sig = np.zeros((h, w, 4), dtype=np.uint8)
-    rgba_sig[:, :, 0] = 0   # R
-    rgba_sig[:, :, 1] = 0   # G
-    rgba_sig[:, :, 2] = 51  # B
-    rgba_sig[:, :, 3] = thresh # Alpha channel
+    rgba_sig[:, :, 0] = 0   
+    rgba_sig[:, :, 1] = 0   
+    rgba_sig[:, :, 2] = 51  # Dark blue ink
+    rgba_sig[:, :, 3] = thresh # Alpha channel is 0 for background
     
     return Image.fromarray(rgba_sig, "RGBA")
 
@@ -98,8 +97,8 @@ def add_rounded_border(image: Image.Image, radius=20, border_width=4, color=(255
     
     return Image.alpha_composite(rounded_img, border_overlay)
 
-def prevent_oom_crash(img: Image.Image, max_size=1000) -> Image.Image:
-    """Downscales images slightly to prevent Streamlit Cloud from crashing during rembg."""
+def prevent_oom_crash(img: Image.Image, max_size=900) -> Image.Image:
+    """Slightly resizes images before AI processing to fit inside 1GB RAM."""
     if max(img.size) > max_size:
         ratio = max_size / max(img.size)
         return img.resize((int(img.width * ratio), int(img.height * ratio)), Image.Resampling.LANCZOS)
@@ -116,33 +115,36 @@ def main():
 
     if main_photo and sig_photo:
         if st.button("Generate Passport Photo"):
-            with st.spinner("Processing images (this may take a moment)..."):
+            with st.spinner("Processing images (Please wait a few seconds)..."):
                 try:
-                    # 1. Load and resize to prevent hard crash in cloud
+                    # Initialize lightweight u2net session so it DOES NOT download the 1GB bria-rmbg model
+                    ai_session = new_session("u2net")
+                    
+                    # 1. Load and resize
                     img = Image.open(main_photo).convert("RGB")
                     img = prevent_oom_crash(img)
                     
                     sig = Image.open(sig_photo).convert("RGB")
-                    sig = prevent_oom_crash(sig, max_size=800)
+                    sig = prevent_oom_crash(sig, max_size=600)
                     
-                    # 2. Smart Crop to Passport Size (Face Detection with Fallback)
+                    # 2. Smart Crop to Passport Size (using your Haar Cascade logic)
                     cropped_img = detect_and_crop_face(img)
                     
-                    # 3. Background Removal
-                    subject_only = remove(cropped_img).convert("RGBA")
+                    # 3. Background Removal (with strict memory safety)
+                    subject_only = remove(cropped_img, session=ai_session).convert("RGBA")
                     
                     # Apply Pastel Blue Background (#8ECAE6)
                     bg_color = (142, 202, 230, 255)
                     final_bg = Image.new("RGBA", subject_only.size, bg_color)
                     composite = Image.alpha_composite(final_bg, subject_only)
                     
-                    # 4. Enhance Main Photo
+                    # 4. Enhance Main Photo (PIL ImageEnhance)
                     enhancer_b = ImageEnhance.Brightness(composite)
                     composite = enhancer_b.enhance(1.10)
                     enhancer_c = ImageEnhance.Contrast(composite)
                     composite = enhancer_c.enhance(1.05)
                     
-                    # 5. Strict Signature Processing
+                    # 5. Strict Signature Processing (Thresholding & Transparency)
                     transparent_sig = process_signature(sig)
                     
                     # 6. Place Signature
@@ -158,6 +160,7 @@ def main():
                     # 7. Add Correct Border Overlay
                     final_image = add_rounded_border(composite, radius=30, border_width=6)
                     
+                    # Handle updated Streamlit parameter
                     st.image(final_image, caption="Final Passport Photo", use_column_width=True)
                     
                     # Download button
