@@ -6,7 +6,6 @@ import numpy as np
 import streamlit as st
 import cv2
 
-# Streamlit/Cloud par OpenCV X11 errors ko rokne ke liye
 os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
 
 def open_image(uploaded):
@@ -62,23 +61,16 @@ def remove_background(img):
         return None, f"Background removal failed: {e}"
 
 def enhance_photo(img, strength):
-    """Natural look ke liye heavy filters hata diye gaye hain."""
     if strength == 0.0:
         return img
-    # Sirf halki si brightness aur color, koi plastic look nahi
     im = ImageEnhance.Color(img).enhance(1.0 + (0.2 * strength))
     im = ImageEnhance.Brightness(im).enhance(1.0 + (0.1 * strength))
     return im
 
-def make_solid_background(size, base_color):
-    """Reference image jaisa clean solid blue background"""
-    W, H = int(size[0]), int(size[1])
-    bg = Image.new("RGB", (W, H), base_color)
-    return bg
-
 def fit_subject_on_background(rgba, bg_color, out_size, margin=0.04):
     W, H = int(out_size[0]), int(out_size[1])
-    bg = make_solid_background((W, H), bg_color).convert("RGBA")
+    # Force solid blue background
+    bg = Image.new("RGBA", (W, H), bg_color)
     subject = rgba.convert("RGBA")
     
     alpha = subject.getchannel("A")
@@ -94,7 +86,7 @@ def fit_subject_on_background(rgba, bg_color, out_size, margin=0.04):
     subject = subject.resize((new_w, new_h), Image.Resampling.LANCZOS)
     
     x = int((W - subject.width) // 2)
-    y = int(max(0, H - subject.height)) # Bottom se attach
+    y = int(max(0, H - subject.height)) 
     bg.alpha_composite(subject, (x, y))
     return bg.convert("RGB")
 
@@ -109,7 +101,7 @@ def process_signature(upload, threshold):
     gray = (0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2])
     
     ink = np.clip((threshold - gray) / max(1, threshold - 30) * 255, 0, 255).astype(np.uint8)
-    sig_out = Image.new("RGBA", sig.size, (15, 15, 15, 0)) # Dark signature ink
+    sig_out = Image.new("RGBA", sig.size, (15, 15, 15, 0))
     sig_out.putalpha(Image.fromarray(ink, "L"))
     
     bbox = sig_out.getchannel("A").getbbox()
@@ -118,22 +110,18 @@ def process_signature(upload, threshold):
     return sig_out
 
 def add_border_and_signature(photo, sig_img, border_size=15, include_sig=False):
-    """Reference jaisa fine border aur bottom signature overlap"""
     border_size = int(border_size)
     W, H = photo.size
     
-    # White base canvas
     final_W = int(W + 2 * border_size)
     final_H = int(H + 2 * border_size)
     
-    # Agar signature chahiye toh niche thodi aur jagah
     if include_sig and sig_img:
         final_H += 80 
         
     canvas = Image.new("RGB", (final_W, final_H), "white")
     canvas.paste(photo, (border_size, border_size))
     
-    # Draw inner rounded line like reference images
     draw = ImageDraw.Draw(canvas)
     inner_margin = border_size + 10
     draw.rounded_rectangle(
@@ -149,11 +137,9 @@ def add_border_and_signature(photo, sig_img, border_size=15, include_sig=False):
         new_w, new_h = max(1, int(sig_w * scale)), max(1, int(sig_h * scale))
         sig_resized = sig_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
         
-        # Bottom center placement
         x = int((final_W - new_w) // 2)
         y = int(final_H - new_h - 15)
         
-        # Paste with transparency
         canvas.paste(sig_resized, (x, y), sig_resized)
         
     return canvas
@@ -174,7 +160,7 @@ def main():
         with col1:
             do_straighten = st.checkbox("Auto-straighten face", value=True)
             do_remove = st.checkbox("Remove Background (AI)", value=True)
-            enhancement = st.slider("Enhancement (Natural)", 0.0, 1.0, 0.1) # Default low
+            enhancement = st.slider("Enhancement (Natural)", 0.0, 1.0, 0.1)
         with col2:
             out_width = int(st.number_input("Photo Width (px)", value=600, step=50))
             out_height = int(st.number_input("Photo Height (px)", value=800, step=50))
@@ -191,8 +177,8 @@ def main():
                 if do_straighten:
                     img, msg = auto_straighten(img)
                 
-                # Reference image jaisa Professional Solid Blue color
-                bg_color = (130, 185, 230) 
+                # Standard Passport Blue
+                bg_color = (65, 131, 215, 255) 
                 
                 if do_remove:
                     rgba, err = remove_background(img)
