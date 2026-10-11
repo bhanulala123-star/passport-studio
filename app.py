@@ -1,7 +1,7 @@
 import io
 import math
 import os
-from PIL import Image, ImageOps, ImageEnhance, ImageFilter
+from PIL import Image, ImageOps, ImageEnhance, ImageDraw
 import numpy as np
 import streamlit as st
 import cv2
@@ -20,13 +20,13 @@ def auto_straighten(img):
         eye_path = os.path.join(cv2.data.haarcascades, "haarcascade_eye.xml")
         
         if not os.path.exists(cascade_path) or not os.path.exists(eye_path):
-            return img, "Face model files unavailable. Original angle kept."
+            return img, "Face model files unavailable."
             
         faces = cv2.CascadeClassifier(cascade_path).detectMultiScale(
             gray, scaleFactor=1.1, minNeighbors=5, minSize=(70, 70)
         )
         if len(faces) == 0:
-            return img, "No face detected. Original angle kept."
+            return img, "No face detected."
             
         x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
         face_gray = gray[y:y + int(h * 0.62), x:x + w]
@@ -37,21 +37,19 @@ def auto_straighten(img):
         centers = [(ex + ew / 2, y + ey + eh / 2) for ex, ey, ew, eh in eyes]
         centers = sorted(centers, key=lambda p: p[0])
         if len(centers) < 2:
-            return img, "Both eyes not detected. Original angle kept."
+            return img, "Both eyes not detected."
             
         pairs = [(a, b) for i, a in enumerate(centers) for b in centers[i+1:]]
         left, right = max(pairs, key=lambda pair: pair[1][0] - pair[0][0])
         angle = math.degrees(math.atan2(right[1] - left[1], right[0] - left[0]))
         
-        if abs(angle) < 0.7:
-            return img, f"Face looks straight (estimated tilt {angle:.1f}°)."
-        if abs(angle) > 25:
-            return img, f"Tilt {angle:.1f}° too large to correct safely."
+        if abs(angle) < 0.7 or abs(angle) > 25:
+            return img, "No safe tilt detected."
             
         fixed = img.rotate(angle, resample=Image.Resampling.BICUBIC, expand=True, fillcolor=(245, 245, 245))
-        return fixed, f"Straightened using eye-line estimate ({angle:.1f}°)."
+        return fixed, f"Straightened ({angle:.1f}°)."
     except Exception as e:
-        return img, f"Auto-straighten skipped safely: {e}"
+        return img, "Straighten skipped."
 
 def remove_background(img):
     try:
@@ -64,26 +62,23 @@ def remove_background(img):
         return None, f"Background removal failed: {e}"
 
 def enhance_photo(img, strength):
-    im = ImageOps.autocontrast(img.convert("RGB"), cutoff=0.4)
-    im = ImageEnhance.Color(im).enhance(1.04 + 0.08 * strength)
-    im = ImageEnhance.Contrast(im).enhance(1.03 + 0.07 * strength)
-    im = ImageEnhance.Brightness(im).enhance(1.015)
-    im = im.filter(ImageFilter.UnsharpMask(radius=1.3 + strength * 0.6, percent=105 + int(strength * 45), threshold=3))
+    """Natural look ke liye heavy filters hata diye gaye hain."""
+    if strength == 0.0:
+        return img
+    # Sirf halki si brightness aur color, koi plastic look nahi
+    im = ImageEnhance.Color(img).enhance(1.0 + (0.2 * strength))
+    im = ImageEnhance.Brightness(im).enhance(1.0 + (0.1 * strength))
     return im
 
-def make_studio_gradient(size, base_color):
+def make_solid_background(size, base_color):
+    """Reference image jaisa clean solid blue background"""
     W, H = int(size[0]), int(size[1])
-    yy, xx = np.mgrid[0:H, 0:W]
-    cx, cy = W * 0.50, H * 0.42
-    dist = np.sqrt(((xx - cx) / (W * 0.78))**2 + ((yy - cy) / (H * 0.78))**2)
-    glow = np.clip(1.0 - dist, 0, 1)[:, :, None] * 20.0
-    base = np.array(base_color, dtype=np.float32)[None, None, :]
-    arr = np.clip(base + glow, 0, 255).astype(np.uint8)
-    return Image.fromarray(arr, "RGB")
+    bg = Image.new("RGB", (W, H), base_color)
+    return bg
 
-def fit_subject_on_background(rgba, bg_color, out_size, margin=0.06):
+def fit_subject_on_background(rgba, bg_color, out_size, margin=0.04):
     W, H = int(out_size[0]), int(out_size[1])
-    bg = make_studio_gradient((W, H), bg_color).convert("RGBA")
+    bg = make_solid_background((W, H), bg_color).convert("RGBA")
     subject = rgba.convert("RGBA")
     
     alpha = subject.getchannel("A")
@@ -98,15 +93,12 @@ def fit_subject_on_background(rgba, bg_color, out_size, margin=0.06):
     new_h = max(1, int(subject.height * scale))
     subject = subject.resize((new_w, new_h), Image.Resampling.LANCZOS)
     
-    a = subject.getchannel("A").filter(ImageFilter.GaussianBlur(0.35))
-    subject.putalpha(a)
-    
     x = int((W - subject.width) // 2)
-    y = int(max(0, H - subject.height - int(H * 0.025)))
+    y = int(max(0, H - subject.height)) # Bottom se attach
     bg.alpha_composite(subject, (x, y))
     return bg.convert("RGB")
 
-def process_signature(upload, threshold, thickness):
+def process_signature(upload, threshold):
     if upload is None:
         return None
     sig = Image.open(upload)
@@ -117,43 +109,51 @@ def process_signature(upload, threshold, thickness):
     gray = (0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2])
     
     ink = np.clip((threshold - gray) / max(1, threshold - 30) * 255, 0, 255).astype(np.uint8)
-    alpha = Image.fromarray(ink, "L").filter(ImageFilter.GaussianBlur(0.35))
+    sig_out = Image.new("RGBA", sig.size, (15, 15, 15, 0)) # Dark signature ink
+    sig_out.putalpha(Image.fromarray(ink, "L"))
     
-    sig_out = Image.new("RGBA", sig.size, (20, 20, 20, 0))
-    sig_out.putalpha(alpha)
     bbox = sig_out.getchannel("A").getbbox()
     if bbox:
         sig_out = sig_out.crop(bbox)
-        
-    if thickness > 0:
-        a = sig_out.getchannel("A").filter(ImageFilter.MaxFilter(3 if thickness == 1 else 5))
-        sig_out.putalpha(a)
     return sig_out
 
-def add_border_and_signature(photo, sig_img, border_size=15, include_sig=False, strip_height=140):
+def add_border_and_signature(photo, sig_img, border_size=15, include_sig=False):
+    """Reference jaisa fine border aur bottom signature overlap"""
     border_size = int(border_size)
-    strip_height = int(strip_height)
-    
     W, H = photo.size
+    
+    # White base canvas
     final_W = int(W + 2 * border_size)
     final_H = int(H + 2 * border_size)
     
+    # Agar signature chahiye toh niche thodi aur jagah
     if include_sig and sig_img:
-        final_H += strip_height
+        final_H += 80 
         
     canvas = Image.new("RGB", (final_W, final_H), "white")
     canvas.paste(photo, (border_size, border_size))
     
+    # Draw inner rounded line like reference images
+    draw = ImageDraw.Draw(canvas)
+    inner_margin = border_size + 10
+    draw.rounded_rectangle(
+        [inner_margin, inner_margin, final_W - inner_margin, final_H - (100 if include_sig else inner_margin)],
+        radius=20, outline="white", width=3
+    )
+    
     if include_sig and sig_img:
         sig_w, sig_h = sig_img.size
-        avail_h = strip_height - 30
+        avail_h = 100
         avail_w = final_W - 40
         scale = min(avail_w / max(1, sig_w), avail_h / max(1, sig_h))
         new_w, new_h = max(1, int(sig_w * scale)), max(1, int(sig_h * scale))
         sig_resized = sig_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
         
+        # Bottom center placement
         x = int((final_W - new_w) // 2)
-        y = int(border_size + H + (strip_height - new_h) // 2)
+        y = int(final_H - new_h - 15)
+        
+        # Paste with transparency
         canvas.paste(sig_resized, (x, y), sig_resized)
         
     return canvas
@@ -162,7 +162,6 @@ def main():
     st.set_page_config(page_title="Passport Studio HD", page_icon="📸", layout="centered")
     st.title("📸 Passport Studio HD")
     st.caption("Professional portrait maker with background cleanup, studio background, white border, and optional signature overlay.")
-    st.info("For best results, upload a clear front-facing photo. Background removal uses AI.")
     
     uploaded = st.file_uploader("Upload Portrait Photo", type=["jpg", "jpeg", "png", "webp"])
     
@@ -170,22 +169,20 @@ def main():
         original = open_image(uploaded)
         st.image(original, caption="Original Upload")
         st.markdown("---")
-        st.subheader("⚙️ Settings")
         
         col1, col2 = st.columns(2)
         with col1:
             do_straighten = st.checkbox("Auto-straighten face", value=True)
             do_remove = st.checkbox("Remove Background (AI)", value=True)
-            enhancement = st.slider("Enhancement Strength", 0.0, 1.0, 0.4)
+            enhancement = st.slider("Enhancement (Natural)", 0.0, 1.0, 0.1) # Default low
         with col2:
             out_width = int(st.number_input("Photo Width (px)", value=600, step=50))
             out_height = int(st.number_input("Photo Height (px)", value=800, step=50))
             border_size = int(st.number_input("White Border Size (px)", value=15, step=5))
             
         st.markdown("---")
-        st.subheader("✍️ Signature Options")
-        sig_upload = st.file_uploader("Upload Signature (Optional, transparent or white bg)", type=["jpg", "jpeg", "png"])
-        inc_sig = st.checkbox("Add Signature Strip at Bottom", value=bool(sig_upload))
+        sig_upload = st.file_uploader("Upload Signature (Optional)", type=["jpg", "jpeg", "png"])
+        inc_sig = st.checkbox("Add Signature", value=bool(sig_upload))
         sig_thresh = st.slider("Signature Ink Threshold", 50, 250, 200)
         
         if st.button("Generate Passport Photo", type="primary"):
@@ -193,9 +190,10 @@ def main():
                 img = original.copy()
                 if do_straighten:
                     img, msg = auto_straighten(img)
-                    st.toast(msg)
                 
-                bg_color = (205, 222, 238)
+                # Reference image jaisa Professional Solid Blue color
+                bg_color = (130, 185, 230) 
+                
                 if do_remove:
                     rgba, err = remove_background(img)
                     if err:
@@ -210,7 +208,7 @@ def main():
                 
                 sig_img = None
                 if sig_upload and inc_sig:
-                    sig_img = process_signature(sig_upload, sig_thresh, thickness=1)
+                    sig_img = process_signature(sig_upload, sig_thresh)
                 
                 final = add_border_and_signature(enhanced, sig_img, border_size=border_size, include_sig=inc_sig)
                 
