@@ -6,7 +6,8 @@ import streamlit as st
 
 st.set_page_config(page_title="Passport Photo & Signature Studio", page_icon="📸", layout="centered")
 st.title("📸 Passport Photo & Signature Studio")
-st.write("Create a passport-style photo, clean background, and add or type a signature.")
+st.write("Create a studio portrait inspired by your reference: light-blue background, clean white frame, HD finish, and a handwritten-style name/signature.")
+st.info("Reference-style preset: enable AI background removal, choose Light blue, keep the border on, and choose Type signature to add the name at the bottom.")
 st.info("Tip: AI background removal is optional. First test with it OFF.")
 
 def load_image(upload):
@@ -73,12 +74,12 @@ if photo_file:
         st.image(original, caption="Uploaded photo", use_container_width=True)
         st.subheader("2) Photo settings")
         remove_bg = st.checkbox("Remove background (AI model)", value=False)
-        bg_choice = st.selectbox("Background", ["White", "Soft neutral", "Light blue", "Keep original"], index=0)
+        bg_choice = st.selectbox("Background", ["Light blue", "White", "Soft neutral", "Keep original"], index=0)
         size_choice = st.selectbox("Photo size", ["600 x 800 (3:4)", " passport 35 x 45 mm (600 x 771)", "Square 600 x 600"], index=0)
         straighten = st.checkbox("Try to straighten face tilt", value=False, help="This simple version does not use face-detection; keep off unless needed.")
         add_border = st.checkbox("Add white border and subtle shadow", value=True)
         st.subheader("3) Signature (optional)")
-        sig_mode = st.radio("Signature method", ["No signature", "Upload signature", "Type signature"], horizontal=False)
+        sig_mode = st.radio("Signature method", ["Type signature", "Upload signature", "No signature"], horizontal=False)
         sig_img = None
         if sig_mode == "Upload signature":
             sig_file = st.file_uploader("Upload signature image (PNG/JPG)", type=["png","jpg","jpeg"], key="sigupload")
@@ -90,7 +91,7 @@ if photo_file:
                     st.error(f"Could not read signature: {e}")
         elif sig_mode == "Type signature":
             sig_text = st.text_input("Type the name/signature", placeholder="Your name")
-            sig_style = st.selectbox("Typed signature style", ["Italic", "Simple bold"])
+            sig_style = st.selectbox("Typed signature style", ["Italic", "Simple bold"], index=0)
             if sig_text.strip():
                 f = font_pick(72, italic=(sig_style=="Italic"))
                 temp = Image.new("RGBA",(1600,220),(255,255,255,0))
@@ -102,7 +103,7 @@ if photo_file:
         sig_position = "Bottom right"
         if sig_mode != "No signature":
             sig_position = st.selectbox("Place signature", ["Bottom right", "Bottom center", "Bottom left"], index=0)
-            sig_width = st.slider("Signature size", 10, 40, 22, 1, format="%d%% of photo width")
+            sig_width = st.slider("Signature size", 10, 40, 30, 1, format="%d%% of photo width")
         st.caption("Use a signature only if you have permission to use it. Check your destination's official photo/signature requirements.")
 
         if st.button("✨ Generate passport photo", type="primary", use_container_width=True):
@@ -116,7 +117,7 @@ if photo_file:
                 else:
                     status.write("Skipping AI background removal…")
                 if work.mode == "RGBA" and bg_choice != "Keep original":
-                    bg_map = {"White": (255,255,255), "Soft neutral": (245,243,238), "Light blue": (220,235,250)}
+                    bg_map = {"White": (255,255,255), "Soft neutral": (245,243,238), "Light blue": (126,194,232)}
                     bg = Image.new("RGBA", work.size, (*bg_map[bg_choice],255))
                     if work.getchannel("A").getextrema() != (255,255):
                         bg.alpha_composite(work)
