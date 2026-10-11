@@ -77,7 +77,7 @@ def enhance_photo(img, strength):
 
 def make_studio_gradient(size, base_color):
     """Soft light-blue studio gradient background banana"""
-    W, H = size
+    W, H = int(size[0]), int(size[1])
     yy, xx = np.mgrid[0:H, 0:W]
     cx, cy = W * 0.50, H * 0.42
     dist = np.sqrt(((xx - cx) / (W * 0.78))**2 + ((yy - cy) / (H * 0.78))**2)
@@ -88,7 +88,7 @@ def make_studio_gradient(size, base_color):
 
 def fit_subject_on_background(rgba, bg_color, out_size, margin=0.06):
     """Subject ko center karke, shoulder properly fit karna"""
-    W, H = out_size
+    W, H = int(out_size[0]), int(out_size[1])
     bg = make_studio_gradient((W, H), bg_color).convert("RGBA")
     subject = rgba.convert("RGBA")
     
@@ -107,8 +107,8 @@ def fit_subject_on_background(rgba, bg_color, out_size, margin=0.06):
     a = subject.getchannel("A").filter(ImageFilter.GaussianBlur(0.35))
     subject.putalpha(a)
     
-    x = (W - subject.width) // 2
-    y = max(0, H - subject.height - int(H * 0.025))
+    x = int((W - subject.width) // 2)
+    y = int(max(0, H - subject.height - int(H * 0.025)))
     bg.alpha_composite(subject, (x, y))
     return bg.convert("RGB")
 
@@ -139,9 +139,12 @@ def process_signature(upload, threshold, thickness):
 
 def add_border_and_signature(photo, sig_img, border_size=15, include_sig=False, strip_height=140):
     """White border aur optional white signature strip lagana"""
+    border_size = int(border_size)
+    strip_height = int(strip_height)
+    
     W, H = photo.size
-    final_W = W + 2 * border_size
-    final_H = H + 2 * border_size
+    final_W = int(W + 2 * border_size)
+    final_H = int(H + 2 * border_size)
     
     if include_sig and sig_img:
         final_H += strip_height
@@ -157,8 +160,8 @@ def add_border_and_signature(photo, sig_img, border_size=15, include_sig=False, 
         new_w, new_h = max(1, int(sig_w * scale)), max(1, int(sig_h * scale))
         sig_resized = sig_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
         
-        x = (final_W - new_w) // 2
-        y = border_size + H + (strip_height - new_h) // 2
+        x = int((final_W - new_w) // 2)
+        y = int(border_size + H + (strip_height - new_h) // 2)
         canvas.paste(sig_resized, (x, y), sig_resized)
         
     return canvas
@@ -173,7 +176,6 @@ def main():
     
     if uploaded:
         original = open_image(uploaded)
-        # BUG FIXED HERE: Removed problematic width parameters completely
         st.image(original, caption="Original Upload")
         st.markdown("---")
         st.subheader("⚙️ Settings")
@@ -184,38 +186,4 @@ def main():
             do_remove = st.checkbox("Remove Background (AI)", value=True)
             enhancement = st.slider("Enhancement Strength", 0.0, 1.0, 0.4)
         with col2:
-            out_width = st.number_input("Photo Width (px)", value=600, step=50)
-            out_height = st.number_input("Photo Height (px)", value=800, step=50)
-            border_size = st.number_input("White Border Size (px)", value=15, step=5)
-            
-        st.markdown("---")
-        st.subheader("✍️ Signature Options")
-        sig_upload = st.file_uploader("Upload Signature (Optional, transparent or white bg)", type=["jpg", "jpeg", "png"])
-        inc_sig = st.checkbox("Add Signature Strip at Bottom", value=bool(sig_upload))
-        sig_thresh = st.slider("Signature Ink Threshold", 50, 250, 200)
-        
-        if st.button("Generate Passport Photo", type="primary"):
-            with st.spinner("Processing... Please wait."):
-                img = original.copy()
-                if do_straighten:
-                    img, msg = auto_straighten(img)
-                    st.toast(msg)
-                
-                bg_color = (205, 222, 238)
-                if do_remove:
-                    rgba, err = remove_background(img)
-                    if err:
-                        st.error(err)
-                        composed = img
-                    else:
-                        composed = fit_subject_on_background(rgba, bg_color, (out_width, out_height))
-                else:
-                    composed = img.resize((out_width, out_height), Image.Resampling.LANCZOS)
-                
-                enhanced = enhance_photo(composed, enhancement)
-                
-                sig_img = None
-                if sig_upload and inc_sig:
-                    sig_img = process_signature(sig_upload, sig_thresh, thickness=1)
-                
-                final = add_border_and_signature(enhanced, sig_img, border_size=int(border_size), include_sig=inc
+            out_width = int(st.number_input("Photo Width (px)", value=600, step
