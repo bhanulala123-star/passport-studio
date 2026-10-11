@@ -1,20 +1,19 @@
 import streamlit as st
+import cv2
 import numpy as np
 from PIL import Image, ImageEnhance, ImageDraw, ImageOps
+from rembg import remove, new_session
 import io
+import gc
 
-# --- ULTRA-FAST LAZY LOADING OPTIMIZATION ---
-# AI Model Session cached so it loads quickly when requested, but NOT at app startup.
+# --- ROCK-SOLID MEMORY OPTIMIZATION ---
+# AI session ko start mein hi cache kar liya gaya hai taaki button dabane par crash na ho
 @st.cache_resource
 def get_ai_session():
-    # rembg sirf yahan import hoga, top level par nahi. App instantly open hogi.
-    from rembg import new_session
     return new_session("u2netp")
 
 def detect_and_crop_face(image: Image.Image, target_ratio=3/4) -> Image.Image:
     """Aapke prompt ke anusar: Detects face using OpenCV Haar Cascades exactly as requested."""
-    import cv2  # Lazy import so app opens fast
-    
     cv_img = cv2.cvtColor(np.array(image.convert("RGB")), cv2.COLOR_RGB2BGR)
     img_h, img_w = cv_img.shape[:2]
     
@@ -26,15 +25,12 @@ def detect_and_crop_face(image: Image.Image, target_ratio=3/4) -> Image.Image:
             cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
             face_cascade = cv2.CascadeClassifier(cascade_path)
             
-            # Detect face
             faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(50, 50))
             
             if len(faces) > 0:
-                # Get largest face
                 faces = sorted(faces, key=lambda x: x[2]*x[3], reverse=True)
                 x, y, w, h = faces[0]
                 
-                # Target aspect ratio is 3:4 (w:h) - Subject takes 70-80% of frame
                 target_h = int(h * 2.5) 
                 target_w = int(target_h * target_ratio)
                 
@@ -46,7 +42,6 @@ def detect_and_crop_face(image: Image.Image, target_ratio=3/4) -> Image.Image:
                 crop_x1 = max(0, center_x - target_w // 2)
                 crop_x2 = crop_x1 + target_w
                 
-                # Handle boundaries
                 if crop_y2 > img_h:
                     crop_y2 = img_h
                     crop_y1 = max(0, crop_y2 - target_h)
@@ -57,9 +52,8 @@ def detect_and_crop_face(image: Image.Image, target_ratio=3/4) -> Image.Image:
                 cropped_cv = cv_img[crop_y1:crop_y2, crop_x1:crop_x2]
                 face_found = True
     except Exception:
-        pass # Safe fallback for cloud environments
+        pass 
 
-    # Fallback: Center crop to 3:4 ratio if OpenCV fails to find a face
     if not face_found:
         target_w = min(img_w, int(img_h * target_ratio))
         target_h = int(target_w / target_ratio)
@@ -71,23 +65,19 @@ def detect_and_crop_face(image: Image.Image, target_ratio=3/4) -> Image.Image:
 
 def process_signature(sig_image: Image.Image) -> Image.Image:
     """Aapke prompt ke anusar: Strict background removal keeping ONLY dark ink using Otsu's thresholding."""
-    import cv2  # Lazy import
-    
     cv_sig = cv2.cvtColor(np.array(sig_image.convert("RGB")), cv2.COLOR_RGB2BGR)
     gray_sig = cv2.cvtColor(cv_sig, cv2.COLOR_BGR2GRAY)
     
     blurred = cv2.GaussianBlur(gray_sig, (3, 3), 0)
     
-    # Otsu's thresholding (inverse so ink is white, background is black)
     _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     
-    # Make everything but the ink 100% transparent (Alpha = 0)
     h, w = thresh.shape
     rgba_sig = np.zeros((h, w, 4), dtype=np.uint8)
     rgba_sig[:, :, 0] = 0   
     rgba_sig[:, :, 1] = 0   
-    rgba_sig[:, :, 2] = 51  # Dark blue ink
-    rgba_sig[:, :, 3] = thresh # Alpha channel mask
+    rgba_sig[:, :, 2] = 51  
+    rgba_sig[:, :, 3] = thresh 
     
     return Image.fromarray(rgba_sig, "RGBA")
 
@@ -109,12 +99,13 @@ def add_rounded_border(image: Image.Image, radius=20, border_width=4, color=(255
     return Image.alpha_composite(rounded_img, border_overlay)
 
 def prevent_oom_crash(img: Image.Image, max_size=600) -> Image.Image:
-    """Memory fix: Image ko perfectly downscale karta hai taaki silent reload/crash na ho."""
+    """Phone se aayi hui badi photos ko silently crash hone se rokta hai."""
     img = ImageOps.exif_transpose(img)
     img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
     return img
 
 def main():
+    st.set_page_config(page_title="Passport Studio", layout="centered")
     st.title("Passport Photo & Signature Generator")
     st.write("Upload a portrait and a signature photo to generate a formatted passport size image.")
     
@@ -124,35 +115,34 @@ def main():
     with col2:
         sig_photo = st.file_uploader("Upload Signature Photo", type=["jpg", "jpeg", "png"])
 
+    # Global session load
+    ai_session = get_ai_session()
+
     if main_photo and sig_photo:
-        if st.button("Generate Passport Photo"):
-            with st.spinner("Processing studio-quality photo... (First run takes a few seconds)"):
+        if st.button("Generate Passport Photo", use_container_width=True):
+            with st.spinner("Processing studio-quality photo..."):
                 try:
-                    # LOCAL IMPORT of heavy library: Ye app load hone ko slow nahi karega
-                    from rembg import remove
-                    
-                    # AI session fetch karna (cached to load instantly after first run)
-                    ai_session = get_ai_session()
-                    
-                    # 1. Load and strictly safely resize photos to avoid Silent Crash
                     img = Image.open(main_photo)
                     img = prevent_oom_crash(img, max_size=600).convert("RGB")
                     
                     sig = Image.open(sig_photo)
                     sig = prevent_oom_crash(sig, max_size=400).convert("RGB")
                     
-                    # 2. Smart Crop to Passport Size
+                    # 1. Smart Crop
                     cropped_img = detect_and_crop_face(img)
                     
-                    # 3. Background Removal with 4MB memory safe model
+                    # Force Memory Cleanup before heavy AI processing
+                    gc.collect()
+                    
+                    # 2. Background Removal
                     subject_only = remove(cropped_img, session=ai_session).convert("RGBA")
                     
-                    # Apply Pastel Light-Blue Background (#8ECAE6)
+                    # 3. Apply Pastel Light-Blue Background (#8ECAE6)
                     bg_color = (142, 202, 230, 255)
                     final_bg = Image.new("RGBA", subject_only.size, bg_color)
                     composite = Image.alpha_composite(final_bg, subject_only)
                     
-                    # 4. Main Photo Enhancement (+5 to 10% brightness/contrast)
+                    # 4. Main Photo Enhancement
                     enhancer_b = ImageEnhance.Brightness(composite)
                     composite = enhancer_b.enhance(1.10)
                     enhancer_c = ImageEnhance.Contrast(composite)
@@ -161,7 +151,7 @@ def main():
                     # 5. Process Transparent Signature
                     transparent_sig = process_signature(sig)
                     
-                    # 6. Place Signature at the bottom-center (55% width)
+                    # 6. Place Signature
                     target_sig_w = int(composite.width * 0.55)
                     sig_ratio = target_sig_w / transparent_sig.width
                     target_sig_h = int(transparent_sig.height * sig_ratio)
@@ -174,12 +164,12 @@ def main():
                     # 7. Add Correct White Border Overlay
                     final_image = add_rounded_border(composite, radius=30, border_width=6)
                     
-                    st.image(final_image, caption="Final Passport Photo", use_column_width=True)
+                    st.success("Photo Generated Successfully!")
+                    st.image(final_image, caption="Final Passport Photo", use_container_width=True)
                     
-                    # Download button
                     buf = io.BytesIO()
                     final_image.convert("RGB").save(buf, format="JPEG", quality=95)
-                    st.download_button("Download Processed Photo", data=buf.getvalue(), file_name="passport_photo.jpg", mime="image/jpeg")
+                    st.download_button("Download Processed Photo", data=buf.getvalue(), file_name="passport_photo.jpg", mime="image/jpeg", use_container_width=True)
                     
                 except Exception as e:
                     st.error(f"An error occurred during processing: {str(e)}")
