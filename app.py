@@ -1,123 +1,124 @@
+import io, math, traceback
 import streamlit as st
 import numpy as np
 import cv2
-import io
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps, ImageDraw
 
-st.set_page_config(page_title="Twinkle Online Centre - Pro Passport Maker", layout="centered")
+st.set_page_config(page_title="Passport Photo Studio", page_icon="📸", layout="centered")
+st.title("📸 Passport Photo Studio")
+st.write("Diagnostic build — button status and errors are shown on this page.")
 
-# --- SECRET FIX: Yahan 'u2netp' (Lite AI model) lagaya hai jisse free server HANG na ho ---
-@st.cache_resource
-def get_rembg_session():
-    from rembg import new_session
-    # u2netp specially low RAM aur fast speed ke liye hota hai
-    return new_session("u2netp")
+def png_bytes(img):
+    b = io.BytesIO()
+    img.save(b, format="PNG")
+    return b.getvalue()
 
-def auto_center_crop(image_cv):
-    gray = cv2.cvtColor(image_cv, cv2.COLOR_BGR2GRAY)
-    face_cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-    face_cascade = cv2.CascadeClassifier(face_cascade_path)
-    faces = face_cascade.detectMultiScale(gray, 1.1, 5, minSize=(30, 30))
-    
-    if len(faces) > 0:
-        faces = sorted(faces, key=lambda x: x[2]*x[3], reverse=True)
-        x, y, w, h = faces[0]
-        cx, cy = x + w // 2, y + h // 2
-        cw, ch = int(w * 2.5), int(w * 2.5 * 1.33)
-        x1, y1 = max(0, cx - cw // 2), max(0, cy - int(h * 0.8))
-        return image_cv[y1:min(image_cv.shape[0], y1 + ch), x1:min(image_cv.shape[1], x1 + cw)]
-    return image_cv
+def tilt_correct(img):
+    arr = np.array(img.convert("RGB"))
+    gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+    face = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    eyes_c = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_eye.xml")
+    faces = face.detectMultiScale(gray, 1.1, 5, minSize=(60,60))
+    if len(faces) == 0:
+        return Image.fromarray(arr), "Face not detected; kept original angle."
+    x,y,w,h = max(faces, key=lambda r:r[2]*r[3])
+    eyes = eyes_c.detectMultiScale(gray[y:y+int(h*.65), x:x+w], 1.1, 5, minSize=(12,12))
+    if len(eyes) < 2:
+        return Image.fromarray(arr), "Eyes not detected reliably; kept original angle."
+    eyes = sorted(eyes, key=lambda e:e[2]*e[3], reverse=True)[:2]
+    centers = sorted([(x+ex+ew/2, y+ey+eh/2) for ex,ey,ew,eh in eyes])
+    (x1,y1),(x2,y2)=centers
+    angle=math.degrees(math.atan2(y2-y1,x2-x1))
+    if abs(angle) > 20 or abs(angle) < .5:
+        return Image.fromarray(arr), f"Auto-rotation skipped (estimated tilt {angle:.1f}°)."
+    h0,w0=arr.shape[:2]
+    m=cv2.getRotationMatrix2D((w0/2,h0/2),angle,1.0)
+    out=cv2.warpAffine(arr,m,(w0,h0),flags=cv2.INTER_CUBIC,borderMode=cv2.BORDER_REPLICATE)
+    return Image.fromarray(out), f"Tilt correction applied ({angle:.1f}°)."
 
-def enhance_image(image_cv):
-    # Remini Jaisa Smooth Texture aur Glow
-    smooth = cv2.bilateralFilter(image_cv, d=7, sigmaColor=75, sigmaSpace=75)
-    lab = cv2.cvtColor(smooth, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8,8))
-    l = clahe.apply(l)
-    enhanced_cv = cv2.cvtColor(cv2.merge((l,a,b)), cv2.COLOR_LAB2BGR)
-    
-    hsv = cv2.cvtColor(enhanced_cv, cv2.COLOR_BGR2HSV)
-    h, s, v = cv2.split(hsv)
-    s = cv2.add(s, 10)
-    return cv2.cvtColor(cv2.merge((h, s, v)), cv2.COLOR_HSV2RGB)
+def crop_portrait(img, dims):
+    img=img.convert("RGB")
+    tw,th=dims; sw,sh=img.size
+    if sw/sh > tw/th:
+        nw=int(sh*tw/th); left=(sw-nw)//2
+        img=img.crop((left,0,left+nw,sh))
+    else:
+        nh=int(sw*th/tw); top=(sh-nh)//2
+        img=img.crop((0,top,sw,top+nh))
+    return img.resize(dims, Image.Resampling.LANCZOS)
 
-def process_passport(img_file, sig_file, sig_text):
-    from rembg import remove
-    
-    # 1. Image Load & Fast Resize (Taaki server hang na ho)
-    original = Image.open(img_file).convert("RGB")
-    original.thumbnail((600, 600), Image.Resampling.LANCZOS)
-    img_cv = cv2.cvtColor(np.array(original), cv2.COLOR_RGB2BGR)
-    
-    # 2. Crop
-    cropped_cv = auto_center_crop(img_cv)
-    
-    # 3. Enhance
-    enhanced_rgb = enhance_image(cropped_cv)
-    enhanced_pil = Image.fromarray(enhanced_rgb)
-    
-    # 4. BG Remove (Lite fast session ke sath)
-    session = get_rembg_session()
-    img_byte_arr = io.BytesIO()
-    enhanced_pil.save(img_byte_arr, format='PNG')
-    bg_removed = remove(img_byte_arr.getvalue(), session=session)
-    fg_img = Image.open(io.BytesIO(bg_removed)).convert("RGBA")
-    
-    # 5. Exact Blue Background Set Krna
-    bg = Image.new("RGBA", fg_img.size, (100, 175, 230, 255))
-    bg.paste(fg_img, (0, 0), fg_img)
-    bg = bg.resize((600, 800), Image.LANCZOS)
-    
-    # 6. White Border
-    final_img = bg.convert("RGB")
-    draw = ImageDraw.Draw(final_img)
-    border_width = 15
-    draw.rectangle([border_width, border_width, final_img.width - border_width, final_img.height - border_width], outline="white", width=border_width)
-    
-    # 7. Signature Set karna
-    if sig_file:
-        sig_img = Image.open(sig_file).convert("RGB")
-        sig_cv = cv2.cvtColor(np.array(sig_img), cv2.COLOR_RGB2GRAY)
-        _, thresh = cv2.threshold(sig_cv, 150, 255, cv2.THRESH_BINARY_INV)
-        bold_sig = cv2.dilate(thresh, np.ones((2,2), np.uint8), iterations=1)
-        rgba_sig = np.zeros((bold_sig.shape[0], bold_sig.shape[1], 4), dtype=np.uint8)
-        rgba_sig[..., 3] = bold_sig
-        rgba_sig[..., 0:3] = 0
-        proc_sig = Image.fromarray(rgba_sig)
-        
-        sig_w = int(final_img.width * 0.7)
-        sig_h = int(proc_sig.height * (sig_w / proc_sig.width))
-        proc_sig = proc_sig.resize((sig_w, sig_h), Image.LANCZOS)
-        final_img.paste(proc_sig, ((final_img.width - sig_w) // 2, final_img.height - sig_h - 30), proc_sig)
-        
-    elif sig_text:
-        try: 
-            font = ImageFont.truetype("BrushScriptMT.ttf", 60)
-        except: 
-            font = ImageFont.load_default()
-        draw.text((final_img.width // 4, final_img.height - 100), sig_text, fill="black", font=font)
-        
-    return final_img
+def frame(img):
+    border=max(4,img.width//60); margin=max(6,img.width//50)
+    out=Image.new("RGB",(img.width+2*(border+margin),img.height+2*(border+margin)), "white")
+    x=border+margin; y=border+margin
+    shade=Image.new("RGBA",out.size,(0,0,0,0))
+    d=ImageDraw.Draw(shade); d.rectangle((x+3,y+4,x+img.width+3,y+img.height+4),fill=(0,0,0,35))
+    shade=shade.filter(ImageFilter.GaussianBlur(6))
+    out=Image.alpha_composite(out.convert("RGBA"),shade)
+    out.paste(img,(x,y))
+    return out.convert("RGB")
 
-# --- UI Setup ---
-st.title("📸 Twinkle Online Centre - Pro Passport Maker")
-st.write("Super Fast AI Engine Loaded. App ab hang nahi hoga.")
+def remove_background(img):
+    from rembg import remove, new_session
+    if "bg_session" not in st.session_state:
+        st.session_state.bg_session = new_session("u2net")
+    return remove(img.convert("RGBA"), session=st.session_state.bg_session).convert("RGBA")
 
-col1, col2 = st.columns(2)
-with col1: 
-    photo_up = st.file_uploader("1. Photo Upload", type=['jpg', 'jpeg', 'png'])
-with col2:
-    sig_opt = st.radio("2. Sign Option:", ["Upload Image", "Type Name"])
-    sig_up = st.file_uploader("Upload Sign", type=['jpg', 'jpeg', 'png']) if sig_opt == "Upload Image" else None
-    sig_txt = st.text_input("Name:", "Twinkle Yadav") if sig_opt == "Type Name" else ""
+uploaded=st.file_uploader("1) Upload photo", type=["jpg","jpeg","png","webp"])
+if uploaded:
+    try:
+        original=Image.open(uploaded).convert("RGB")
+        st.image(original, caption="Uploaded photo", use_container_width=True)
+    except Exception as e:
+        st.error(f"Could not read uploaded image: {e}")
+        st.stop()
 
-if photo_up and st.button("Generate HD Passport"):
-    with st.spinner("Processing in seconds (Memory Optimized)..."):
-        result = process_passport(photo_up, sig_up, sig_txt)
-        st.success("Photo Ready!")
-        st.image(result, use_column_width=True)
-        
-        buf = io.BytesIO()
-        result.save(buf, format="PNG", quality=100)
-        st.download_button("Download HD Photo", data=buf.getvalue(), file_name="passport_hd.png", mime="image/png")
+    c1,c2=st.columns(2)
+    with c1:
+        straighten=st.checkbox("Try to straighten face tilt", True)
+        bg_remove=st.checkbox("Remove background (AI model)", True)
+    with c2:
+        bg_name=st.selectbox("Background",["Soft neutral","White","Light grey","Blue"])
+        size=st.selectbox("Size",["600 x 800","413 x 531","300 x 400"])
+    colors={"Soft neutral":(245,245,242),"White":(255,255,255),"Light grey":(238,240,242),"Blue":(125,190,225)}
+    if st.button("✨ Create passport photo", type="primary", use_container_width=True):
+        st.session_state["last_status"]="Button clicked"
+        st.info("STEP 1/4 — Button clicked. Processing started.")
+        try:
+            work=original.copy()
+            if straighten:
+                with st.spinner("STEP 1/4 — Checking face alignment..."):
+                    work, note=tilt_correct(work)
+                st.write(note)
+            if bg_remove:
+                st.info("STEP 2/4 — AI background removal started. First run can take a few minutes.")
+                with st.spinner("Removing background. Please wait..."):
+                    fg=remove_background(work)
+                bg=Image.new("RGBA",fg.size,(*colors[bg_name],255))
+                bg.alpha_composite(fg)
+                processed=bg.convert("RGB")
+            else:
+                processed=work
+                st.info("STEP 2/4 — Background removal skipped.")
+            with st.spinner("STEP 3/4 — Enhancing image..."):
+                processed=ImageEnhance.Color(processed).enhance(1.03)
+                processed=ImageEnhance.Contrast(processed).enhance(1.05)
+                processed=ImageEnhance.Sharpness(processed).enhance(1.2)
+                processed=processed.filter(ImageFilter.UnsharpMask(radius=1,percent=70,threshold=3))
+            dims=(413,531) if size.startswith("413") else ((300,400) if size.startswith("300") else (600,800))
+            with st.spinner("STEP 4/4 — Cropping and adding white border..."):
+                result=frame(crop_portrait(processed,dims))
+            st.success("SUCCESS — Photo created.")
+            st.image(result,caption="Generated passport-style photo",use_container_width=True)
+            st.download_button("⬇️ Download PNG",png_bytes(result),"passport_photo.png","image/png",use_container_width=True)
+        except Exception as e:
+            st.error("PROCESSING FAILED — The exact error is shown below. Copy the error text if possible.")
+            st.code(f"{type(e).__name__}: {e}")
+            with st.expander("Technical details"):
+                st.code(traceback.format_exc())
+else:
+    st.info("Upload a photo first. The Generate button appears after you upload an image.")
+
+st.divider()
+st.subheader("Quick test without AI background removal")
+st.caption("If generation does not work, uncheck AI background removal and try again. This tests the button and photo pipeline without loading the AI model.")
