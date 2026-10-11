@@ -99,8 +99,8 @@ if main_upload and sig_upload:
     st.success("Success! Image generated.")
     
     # --- Final Output ---
-    st.image(final_portrait, caption="Final Self-Attested Photo", use_column_width=True)
-    
+    st.image(original, caption="Original Upload", use_container_width=True)
+
     # Prepare image for download
     buf = io.BytesIO()
     final_portrait.save(buf, format="JPEG", quality=95)
