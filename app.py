@@ -1,20 +1,18 @@
 import streamlit as st
+import cv2
 import numpy as np
-from PIL import Image, ImageEnhance, ImageDraw
+from PIL import Image, ImageEnhance, ImageDraw, ImageOps
+from rembg import remove, new_session
 import io
 
-# --- SPEED OPTIMIZATION (LAZY LOADING) ---
-# Heavy AI models ko UI load hote time block karne se rokne ke liye
+# --- SUPERFAST OPTIMIZATION ---
+# Is caching ki wajah se lightweight AI model sirf ek baar load hoga, app bar-bar hang nahi hogi.
 @st.cache_resource
 def get_ai_session():
-    # rembg sirf tabhi import hoga jab zaroorat hogi, isse app link instantly open hoga
-    from rembg import new_session
     return new_session("u2netp")
 
 def detect_and_crop_face(image: Image.Image, target_ratio=3/4) -> Image.Image:
-    """Detects face using OpenCV Haar Cascades exactly as requested."""
-    import cv2  # Lazy import for fast initial app loading
-    
+    """Aapke prompt ke anusar: Detects face using OpenCV Haar Cascades exactly as requested."""
     cv_img = cv2.cvtColor(np.array(image.convert("RGB")), cv2.COLOR_RGB2BGR)
     img_h, img_w = cv_img.shape[:2]
     
@@ -70,9 +68,7 @@ def detect_and_crop_face(image: Image.Image, target_ratio=3/4) -> Image.Image:
     return Image.fromarray(cv2.cvtColor(cropped_cv, cv2.COLOR_BGR2RGB))
 
 def process_signature(sig_image: Image.Image) -> Image.Image:
-    """Strict background removal keeping ONLY dark ink using Otsu's thresholding."""
-    import cv2  # Lazy import
-    
+    """Aapke prompt ke anusar: Strict background removal keeping ONLY dark ink using Otsu's thresholding."""
     cv_sig = cv2.cvtColor(np.array(sig_image.convert("RGB")), cv2.COLOR_RGB2BGR)
     gray_sig = cv2.cvtColor(cv_sig, cv2.COLOR_BGR2GRAY)
     
@@ -92,7 +88,7 @@ def process_signature(sig_image: Image.Image) -> Image.Image:
     return Image.fromarray(rgba_sig, "RGBA")
 
 def add_rounded_border(image: Image.Image, radius=20, border_width=4, color=(255, 255, 255)) -> Image.Image:
-    """Overlays a thin elegant white border with rounded corners."""
+    """Aapke prompt ke anusar: Overlays a thin elegant white border with rounded corners."""
     mask = Image.new('L', image.size, 0)
     draw = ImageDraw.Draw(mask)
     draw.rounded_rectangle([(0, 0), image.size], radius=radius, fill=255)
@@ -108,11 +104,13 @@ def add_rounded_border(image: Image.Image, radius=20, border_width=4, color=(255
     
     return Image.alpha_composite(rounded_img, border_overlay)
 
-def prevent_oom_crash(img: Image.Image, max_size=800) -> Image.Image:
-    """Resizes large smartphone photos to prevent 1GB RAM limits on Streamlit."""
-    img_copy = img.copy()
-    img_copy.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
-    return img_copy
+def prevent_oom_crash(img: Image.Image, max_size=600) -> Image.Image:
+    """Memory fix: Image ko perfectly downscale karta hai taaki silent reload/crash na ho."""
+    # Phone ki ulti/tedhi photo ko theek karta hai
+    img = ImageOps.exif_transpose(img)
+    # Fast aur memory safe resizing
+    img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+    return img
 
 def main():
     st.title("Passport Photo & Signature Generator")
@@ -126,25 +124,22 @@ def main():
 
     if main_photo and sig_photo:
         if st.button("Generate Passport Photo"):
-            with st.spinner("Processing studio-quality photo..."):
+            with st.spinner("Processing studio-quality photo... (First time may take 5-10 sec)"):
                 try:
-                    # Lazy loading rembg remove function
-                    from rembg import remove
-                    
-                    # Session loaded instantly from cache
+                    # AI session fetch karna (cached to load instantly)
                     ai_session = get_ai_session()
                     
-                    # 1. Load and safely resize photos
-                    img = Image.open(main_photo).convert("RGB")
-                    img = prevent_oom_crash(img, max_size=800)
+                    # 1. Load and strictly safely resize photos to avoid Silent Crash
+                    img = Image.open(main_photo)
+                    img = prevent_oom_crash(img, max_size=600).convert("RGB")
                     
-                    sig = Image.open(sig_photo).convert("RGB")
-                    sig = prevent_oom_crash(sig, max_size=600)
+                    sig = Image.open(sig_photo)
+                    sig = prevent_oom_crash(sig, max_size=400).convert("RGB")
                     
                     # 2. Smart Crop to Passport Size
                     cropped_img = detect_and_crop_face(img)
                     
-                    # 3. Background Removal
+                    # 3. Background Removal with 4MB memory safe model
                     subject_only = remove(cropped_img, session=ai_session).convert("RGBA")
                     
                     # Apply Pastel Light-Blue Background (#8ECAE6)
