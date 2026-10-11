@@ -1,64 +1,63 @@
 import io
 import math
 import os
-import textwrap
-from PIL import Image, ImageOps, ImageEnhance, ImageFilter, ImageDraw, ImageFont
+from PIL import Image, ImageOps, ImageEnhance, ImageFilter
 import numpy as np
 import streamlit as st
+import cv2
 
-st.set_page_config(page_title="Passport Studio HD", page_icon="📸", layout="centered")
+# Streamlit/Cloud par OpenCV X11 errors ko rokne ke liye
+os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
 
-# Optional computer-vision/background-removal packages are imported only when needed.
 def open_image(uploaded):
+    """EXIF orientation fix karke image load karna"""
     im = Image.open(uploaded)
     return ImageOps.exif_transpose(im).convert("RGB")
 
-def load_cv2():
-    try:
-        import cv2
-        return cv2
-    except Exception:
-        return None
-
 def auto_straighten(img):
-    """Estimate head tilt from eye centers when OpenCV's bundled Haar models are available."""
-    cv2 = load_cv2()
-    if cv2 is None:
-        return img, "Auto-straighten unavailable (OpenCV failed to load); kept original angle."
+    """Haar Cascade ka use karke face/eyes detect karna aur photo ko seedha karna"""
     try:
         gray = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
         cascade_path = os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
         eye_path = os.path.join(cv2.data.haarcascades, "haarcascade_eye.xml")
+        
         if not os.path.exists(cascade_path) or not os.path.exists(eye_path):
-            return img, "Face model files unavailable; kept original angle."
+            return img, "Face model files unavailable. Original angle kept."
+            
         faces = cv2.CascadeClassifier(cascade_path).detectMultiScale(
             gray, scaleFactor=1.1, minNeighbors=5, minSize=(70, 70)
         )
         if len(faces) == 0:
-            return img, "No face detected; kept original angle."
+            return img, "No face detected. Original angle kept."
+            
+        # Select largest face
         x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
-        face_gray = gray[y:y + int(h * .62), x:x + w]
+        face_gray = gray[y:y + int(h * 0.62), x:x + w]
         eyes = cv2.CascadeClassifier(eye_path).detectMultiScale(
             face_gray, scaleFactor=1.1, minNeighbors=5, minSize=(12, 12)
         )
-        # Use two eye detections in the upper half, choosing the most separated pair.
-        centers = [(x + ex + ew / 2, y + ey + eh / 2) for ex, ey, ew, eh in eyes]
+        
+        centers = [(ex + ew / 2, y + ey + eh / 2) for ex, ey, ew, eh in eyes]
         centers = sorted(centers, key=lambda p: p[0])
         if len(centers) < 2:
-            return img, "Face found, but both eyes weren't detected; kept original angle."
+            return img, "Both eyes not detected. Original angle kept."
+            
         pairs = [(a, b) for i, a in enumerate(centers) for b in centers[i+1:]]
         left, right = max(pairs, key=lambda pair: pair[1][0] - pair[0][0])
         angle = math.degrees(math.atan2(right[1] - left[1], right[0] - left[0]))
+        
         if abs(angle) < 0.7:
             return img, f"Face looks straight (estimated tilt {angle:.1f}°)."
         if abs(angle) > 25:
-            return img, f"Estimated tilt {angle:.1f}° is too large to correct safely; kept original."
+            return img, f"Tilt {angle:.1f}° too large to correct safely."
+            
         fixed = img.rotate(angle, resample=Image.Resampling.BICUBIC, expand=True, fillcolor=(245, 245, 245))
-        return fixed, f"Straightened using eye-line estimate ({angle:.1f}°). Check preview before downloading."
+        return fixed, f"Straightened using eye-line estimate ({angle:.1f}°)."
     except Exception as e:
-        return img, f"Auto-straighten skipped safely: {type(e).__name__}."
+        return img, f"Auto-straighten skipped safely: {e}"
 
 def remove_background(img):
+    """rembg ka use karke background nikalna"""
     try:
         from rembg import remove
         out = remove(img)
@@ -66,19 +65,19 @@ def remove_background(img):
             out = Image.open(io.BytesIO(out))
         return out.convert("RGBA"), None
     except Exception as e:
-        return None, f"Background removal failed: {type(e).__name__}: {e}"
+        return None, f"Background removal failed: {e}"
 
 def enhance_photo(img, strength):
-    # Conservative enhancement: preserves identity/details; not generative face replacement.
+    """Conservative enhancement - skin texture preserve karta hai"""
     im = ImageOps.autocontrast(img.convert("RGB"), cutoff=0.4)
     im = ImageEnhance.Color(im).enhance(1.04 + 0.08 * strength)
     im = ImageEnhance.Contrast(im).enhance(1.03 + 0.07 * strength)
     im = ImageEnhance.Brightness(im).enhance(1.015)
-    im = im.filter(ImageFilter.UnsharpMask(radius=1.3 + strength * .6, percent=105 + int(strength * 45), threshold=3))
+    im = im.filter(ImageFilter.UnsharpMask(radius=1.3 + strength * 0.6, percent=105 + int(strength * 45), threshold=3))
     return im
 
 def make_studio_gradient(size, base_color):
-    """Soft light-center studio background, close to the supplied reference."""
+    """Soft light-blue studio gradient background banana"""
     W, H = size
     yy, xx = np.mgrid[0:H, 0:W]
     cx, cy = W * 0.50, H * 0.42
@@ -89,190 +88,160 @@ def make_studio_gradient(size, base_color):
     return Image.fromarray(arr, "RGB")
 
 def fit_subject_on_background(rgba, bg_color, out_size, margin=0.06):
+    """Subject ko center karke, shoulder properly fit karna"""
     W, H = out_size
     bg = make_studio_gradient((W, H), bg_color).convert("RGBA")
     subject = rgba.convert("RGBA")
-    # Crop only transparent padding; do not crop face/hair/clothing based on guessed coordinates.
+    
     alpha = subject.getchannel("A")
     bbox = alpha.getbbox()
     if bbox:
         subject = subject.crop(bbox)
-    max_w, max_h = int(W * (1 - 2 * margin)), int(H * (1 - 2 * margin))
+        
+    max_w, max_h = int(W * (1 - 2 * margin)), int(H * (1 - margin))
     scale = min(max_w / max(1, subject.width), max_h / max(1, subject.height))
-    subject = subject.resize((max(1, int(subject.width * scale)), max(1, int(subject.height * scale))), Image.Resampling.LANCZOS)
-    # Mild alpha-edge smoothing reduces jagged cut-outs without blurring the subject.
+    
+    new_w = max(1, int(subject.width * scale))
+    new_h = max(1, int(subject.height * scale))
+    subject = subject.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    
+    # Smooth edges thoda sa
     a = subject.getchannel("A").filter(ImageFilter.GaussianBlur(0.35))
     subject.putalpha(a)
+    
+    # Center X, Bottom Y
     x = (W - subject.width) // 2
     y = max(0, H - subject.height - int(H * 0.025))
     bg.alpha_composite(subject, (x, y))
     return bg.convert("RGB")
 
-def find_font(size, bold=False, italic=False):
-    candidates = []
-    if italic:
-        candidates += ["/usr/share/fonts/truetype/dejavu/DejaVuSerifCondensed-Italic.ttf",
-                       "/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf"]
-    if bold:
-        candidates += ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]
-    candidates += ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                   "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"]
-    for p in candidates:
-        try:
-            return ImageFont.truetype(p, size)
-        except Exception:
-            pass
-    return ImageFont.load_default()
-
-def process_signature(upload, typed, canvas_size, threshold, rotate_auto, thickness):
-    W, H = canvas_size
-    if upload is not None:
-        sig = Image.open(upload)
-        sig = ImageOps.exif_transpose(sig).convert("RGBA")
-        # Estimate paper background from image corners and make near-white pixels transparent.
-        arr = np.array(sig).astype(np.int16)
-        rgb = arr[:, :, :3]
-        # Relative darkness; preserve dark blue/black ink, remove white/gray paper.
-        gray = (0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2])
-        # threshold slider 80..245; low values keep lighter strokes, high removes more background.
-        ink = np.clip((threshold - gray) / max(1, threshold - 30) * 255, 0, 255).astype(np.uint8)
-        # Reduce color tint from paper; use black ink for clean transparent signature.
-        alpha = Image.fromarray(ink, "L").filter(ImageFilter.GaussianBlur(0.35))
-        sig = Image.new("RGBA", sig.size, (20, 20, 20, 0))
-        sig.putalpha(alpha)
-        bbox = sig.getchannel("A").getbbox()
-        if bbox:
-            sig = sig.crop(bbox)
-        if rotate_auto and sig.width > 0 and sig.height > 0:
-            # Principal-axis estimate from alpha pixels; rotate only modest skew.
-            a = np.array(sig.getchannel("A"))
-            yy, xx = np.where(a > 50)
-            if len(xx) > 100:
-                cov = np.cov(np.vstack((xx, yy)))
-                vals, vecs = np.linalg.eigh(cov)
-                vx, vy = vecs[:, np.argmax(vals)]
-                angle = math.degrees(math.atan2(vy, vx))
-                if angle > 90: angle -= 180
-                if angle < -90: angle += 180
-                if abs(angle) <= 35:
-                    sig = sig.rotate(angle, resample=Image.Resampling.BICUBIC, expand=True)
-    else:
-        if not typed.strip():
-            return None
-        sig = Image.new("RGBA", (1100, 240), (255, 255, 255, 0))
-        d = ImageDraw.Draw(sig)
-        font = find_font(155, italic=True)
-        d.text((25, 12), typed.strip(), font=font, fill=(10, 10, 10, 255), stroke_width=0)
-        bbox = sig.getchannel("A").getbbox()
-        if bbox:
-            sig = sig.crop(bbox)
-    if sig.width < 1 or sig.height < 1:
+def process_signature(upload, threshold, thickness):
+    """Signature ka background transparent banakar ink nikalna"""
+    if upload is None:
         return None
-    # Bolden strokes a little using max filter.
+    sig = Image.open(upload)
+    sig = ImageOps.exif_transpose(sig).convert("RGBA")
+    
+    arr = np.array(sig).astype(np.int16)
+    rgb = arr[:, :, :3]
+    gray = (0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2])
+    
+    ink = np.clip((threshold - gray) / max(1, threshold - 30) * 255, 0, 255).astype(np.uint8)
+    alpha = Image.fromarray(ink, "L").filter(ImageFilter.GaussianBlur(0.35))
+    
+    sig_out = Image.new("RGBA", sig.size, (20, 20, 20, 0))
+    sig_out.putalpha(alpha)
+    bbox = sig_out.getchannel("A").getbbox()
+    if bbox:
+        sig_out = sig_out.crop(bbox)
+        
     if thickness > 0:
-        alpha = sig.getchannel("A").filter(ImageFilter.MaxFilter(3 if thickness == 1 else 5))
-        sig.putalpha(alpha)
-    # Keep signature aspect ratio; caller positions it.
-    return sig
+        a = sig_out.getchannel("A").filter(ImageFilter.MaxFilter(3 if thickness == 1 else 5))
+        sig_out.putalpha(a)
+    return sig_out
 
-st.title("📸 Passport Studio HD")
-st.caption("Photo background cleanup, blue studio background, white border and signature overlay.")
-st.info("For best results, upload a clear, front-facing photo. Automatic straightening is an estimate; review the preview. This app does not change facial identity.")
+def add_border_and_signature(photo, sig_img, border_size=15, include_sig=False, strip_height=140):
+    """White border aur optional white signature strip lagana"""
+    W, H = photo.size
+    
+    final_W = W + 2 * border_size
+    final_H = H + 2 * border_size
+    
+    if include_sig and sig_img:
+        final_H += strip_height
+        
+    canvas = Image.new("RGB", (final_W, final_H), "white")
+    canvas.paste(photo, (border_size, border_size))
+    
+    if include_sig and sig_img:
+        sig_w, sig_h = sig_img.size
+        # Fit signature in the available strip
+        avail_h = strip_height - 30
+        avail_w = final_W - 40
+        scale = min(avail_w / max(1, sig_w), avail_h / max(1, sig_h))
+        new_w, new_h = max(1, int(sig_w * scale)), max(1, int(sig_h * scale))
+        sig_resized = sig_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        
+        x = (final_W - new_w) // 2
+        y = border_size + H + (strip_height - new_h) // 2
+        
+        # Transparent overlay
+        canvas.paste(sig_resized, (x, y), sig_resized)
+        
+    return canvas
 
-uploaded = st.file_uploader("1) Upload photo", type=["jpg", "jpeg", "png", "webp"])
-if uploaded:
-    original = open_image(uploaded)
-    st.image(original, caption="Original upload", use_container_width=True)
-    c1, c2 = st.columns(2)
-    with c1:
-        straighten = st.checkbox("Auto-straighten face (experimental)", value=True)
-        do_remove = st.checkbox("Remove background automatically", value=True)
-        bg_name = st.selectbox("Background", ["Sky blue", "Soft light blue", "White", "Off-white"], index=0)
-        size_name = st.selectbox("Output size", ["35 × 45 mm (600 × 800 px)", "2 × 2 inch (600 × 600 px)", "Custom 600 × 800 px"], index=0)
-    with c2:
-        strength = st.slider("HD enhancement strength", 0, 3, 2)
-        border = st.slider("White border (px)", 2, 24, 8)
-        shadow = st.checkbox("Soft shadow", value=False)
-        st.caption("Enhancement uses contrast, color and sharpening. It is not AI face reconstruction like Remini.")
-    st.subheader("2) Signature")
-    sig_upload = st.file_uploader("Upload signature image (paper background is okay)", type=["jpg", "jpeg", "png", "webp"], key="sig")
-    typed_sig = st.text_input("Or type a name/signature", placeholder="Type name here")
-    sc1, sc2 = st.columns(2)
-    with sc1:
-        sig_position = st.selectbox("Signature placement", ["Bottom center", "Bottom left", "Bottom right"], index=0)
-        sig_width = st.slider("Signature width (% of photo)", 15, 55, 32)
-    with sc2:
-        sig_threshold = st.slider("Remove paper background (signature)", 80, 245, 220)
-        sig_bold = st.selectbox("Signature stroke", ["Normal", "Bold", "Extra bold"], index=1)
-        sig_auto = st.checkbox("Auto-straighten uploaded signature", value=True)
-    if st.button("✨ Generate HD passport photo", type="primary", use_container_width=True):
-        with st.spinner("Processing photo…"):
-            work = original.copy()
-            notes = []
-            if straighten:
-                work, n = auto_straighten(work)
-                notes.append(n)
-            if do_remove:
-                rgba, err = remove_background(work)
-                if rgba is not None:
-                    bg_map = {"Sky blue": (105, 190, 235), "Soft light blue": (150, 205, 235), "White": (255, 255, 255), "Off-white": (248, 247, 242)}
-                    out_size = (600, 800) if "600 × 800" in size_name else (600, 600)
-                    work = fit_subject_on_background(rgba, bg_map[bg_name], out_size, margin=.06)
-                    notes.append("Background removed and replaced with a soft studio gradient.")
+def main():
+    st.set_page_config(page_title="Passport Studio HD", page_icon="📸", layout="centered")
+    st.title("📸 Passport Studio HD")
+    st.caption("Professional portrait maker with background cleanup, studio background, white border, and optional signature overlay.")
+    
+    st.info("For best results, upload a clear front-facing photo. Background removal uses AI.")
+    
+    uploaded = st.file_uploader("Upload Portrait Photo", type=["jpg", "jpeg", "png", "webp"])
+    
+    if uploaded:
+        original = open_image(uploaded)
+        st.image(original, caption="Original Upload", use_container_width=True)
+        
+        st.markdown("---")
+        st.subheader("⚙️ Settings")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            do_straighten = st.checkbox("Auto-straighten face", value=True)
+            do_remove = st.checkbox("Remove Background (AI)", value=True)
+            enhancement = st.slider("Enhancement Strength", 0.0, 1.0, 0.4)
+            
+        with col2:
+            out_width = st.number_input("Photo Width (px)", value=600, step=50)
+            out_height = st.number_input("Photo Height (px)", value=800, step=50)
+            border_size = st.number_input("White Border Size (px)", value=15, step=5)
+            
+        st.markdown("---")
+        st.subheader("✍️ Signature Options")
+        sig_upload = st.file_uploader("Upload Signature (Optional, transparent or white bg)", type=["jpg", "jpeg", "png"])
+        inc_sig = st.checkbox("Add Signature Strip at Bottom", value=bool(sig_upload))
+        sig_thresh = st.slider("Signature Ink Threshold", 50, 250, 200)
+        
+        if st.button("Generate Passport Photo", type="primary"):
+            with st.spinner("Processing... Please wait."):
+                img = original.copy()
+                if do_straighten:
+                    img, msg = auto_straighten(img)
+                    st.toast(msg)
+                
+                # Default Light Blue Studio Color
+                bg_color = (205, 222, 238)
+                
+                if do_remove:
+                    rgba, err = remove_background(img)
+                    if err:
+                        st.error(err)
+                        composed = img
+                    else:
+                        composed = fit_subject_on_background(rgba, bg_color, (out_width, out_height))
                 else:
-                    st.error("Background removal failed. Try again, or turn off background removal. Details: " + err)
-                    st.stop()
-            else:
-                out_size = (600, 800) if "600 × 800" in size_name else (600, 600)
-                work = ImageOps.fit(work, out_size, method=Image.Resampling.LANCZOS, centering=(.5, .42))
-                notes.append("Original background kept.")
-            out_size = (600, 800) if "600 × 800" in size_name else (600, 600)
-            if work.size != out_size:
-                work = ImageOps.fit(work, out_size, method=Image.Resampling.LANCZOS, centering=(.5, .43))
-            work = enhance_photo(work, strength)
-            # Compose border and optional subtle shadow.
-            if shadow:
-                frame = Image.new("RGB", (work.width + 2*border + 28, work.height + 2*border + 28), (235, 235, 235))
-                inner = Image.new("RGB", (work.width + 2*border, work.height + 2*border), "white")
-                inner.paste(work, (border, border))
-                shade = Image.new("RGBA", inner.size, (0,0,0,0))
-                frame_rgba = frame.convert("RGBA")
-                sh = Image.new("RGBA", inner.size, (0,0,0,75)).filter(ImageFilter.GaussianBlur(10))
-                frame_rgba.alpha_composite(sh, (18,18))
-                frame_rgba.alpha_composite(inner.convert("RGBA"), (0,0))
-                framed = frame_rgba.convert("RGB")
-            else:
-                framed = Image.new("RGB", (work.width + 2*border, work.height + 2*border), "white")
-                framed.paste(work, (border, border))
-            sig = process_signature(sig_upload, typed_sig, out_size, sig_threshold, sig_auto, 0 if sig_bold == "Normal" else (1 if sig_bold == "Bold" else 2))
-            if sig is not None:
-                # Add a dedicated white signature strip below the photo, like the reference layout.
-                band_h = max(100, int(work.width * 0.20))
-                canvas = Image.new("RGB", (framed.width, framed.height + band_h), "white")
-                canvas.paste(framed, (0, 0))
-                target_w = int(work.width * sig_width / 100)
-                target_h = max(1, int(sig.height * target_w / sig.width))
-                # Keep signature fully inside the lower white strip.
-                target_h = min(target_h, band_h - 24)
-                target_w = max(1, int(sig.width * target_h / sig.height))
-                sig = sig.resize((target_w, target_h), Image.Resampling.LANCZOS)
-                if sig_position == "Bottom center":
-                    x = (canvas.width - sig.width) // 2
-                elif sig_position == "Bottom right":
-                    x = canvas.width - sig.width - 18
-                else:
-                    x = 18
-                y = framed.height + (band_h - sig.height) // 2
-                canvas_rgba = canvas.convert("RGBA")
-                canvas_rgba.alpha_composite(sig, (max(0, x), max(framed.height, y)))
-                framed = canvas_rgba.convert("RGB")
-            st.success("Photo generated. Check that the face, background and signature look correct.")
-            for note in notes:
-                st.caption("• " + note)
-            st.image(framed, caption="Generated preview", use_container_width=True)
-            buffer = io.BytesIO()
-            framed.save(buffer, format="PNG", optimize=True, dpi=(300, 300))
-            st.download_button("⬇️ Download HD PNG", data=buffer.getvalue(), file_name="passport_photo_hd.png", mime="image/png", use_container_width=True)
-else:
-    st.markdown("### What this app does")
-    st.markdown("- Passport-style 600×800 or square output\n- Optional background removal and plain background replacement\n- Conservative sharpness, contrast and color enhancement\n- White border and optional soft shadow\n- Signature upload with paper-background cleanup, or typed name overlay")
+                    composed = img.resize((out_width, out_height), Image.Resampling.LANCZOS)
+                
+                enhanced = enhance_photo(composed, enhancement)
+                
+                sig_img = None
+                if sig_upload and inc_sig:
+                    sig_img = process_signature(sig_upload, sig_thresh, thickness=1)
+                
+                final = add_border_and_signature(enhanced, sig_img, border_size=int(border_size), include_sig=inc_sig)
+                
+                st.success("Your photo is ready!")
+                st.image(final, caption="Final Passport Photo", use_container_width=True)
+                
+                buf = io.BytesIO()
+                final.save(buf, format="PNG")
+                st.download_button(
+                    label="Download HD PNG", 
+                    data=buf.getvalue(), 
+                    file_name="passport_ready.png", 
+                    mime="image/png"
+                )
+
+if __name__ == '__main__':
+    main()
