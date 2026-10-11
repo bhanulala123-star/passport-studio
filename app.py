@@ -77,11 +77,22 @@ def enhance_photo(img, strength):
     im = im.filter(ImageFilter.UnsharpMask(radius=1.3 + strength * .6, percent=105 + int(strength * 45), threshold=3))
     return im
 
-def fit_subject_on_background(rgba, bg_color, out_size, margin=0.08):
+def make_studio_gradient(size, base_color):
+    """Soft light-center studio background, close to the supplied reference."""
+    W, H = size
+    yy, xx = np.mgrid[0:H, 0:W]
+    cx, cy = W * 0.50, H * 0.42
+    dist = np.sqrt(((xx - cx) / (W * 0.78))**2 + ((yy - cy) / (H * 0.78))**2)
+    glow = np.clip(1.0 - dist, 0, 1)[:, :, None] * 20.0
+    base = np.array(base_color, dtype=np.float32)[None, None, :]
+    arr = np.clip(base + glow, 0, 255).astype(np.uint8)
+    return Image.fromarray(arr, "RGB")
+
+def fit_subject_on_background(rgba, bg_color, out_size, margin=0.06):
     W, H = out_size
-    bg = Image.new("RGB", (W, H), bg_color)
-    subject = rgba.copy()
-    # Use alpha bbox so transparent padding does not distort framing.
+    bg = make_studio_gradient((W, H), bg_color).convert("RGBA")
+    subject = rgba.convert("RGBA")
+    # Crop only transparent padding; do not crop face/hair/clothing based on guessed coordinates.
     alpha = subject.getchannel("A")
     bbox = alpha.getbbox()
     if bbox:
@@ -89,11 +100,13 @@ def fit_subject_on_background(rgba, bg_color, out_size, margin=0.08):
     max_w, max_h = int(W * (1 - 2 * margin)), int(H * (1 - 2 * margin))
     scale = min(max_w / max(1, subject.width), max_h / max(1, subject.height))
     subject = subject.resize((max(1, int(subject.width * scale)), max(1, int(subject.height * scale))), Image.Resampling.LANCZOS)
+    # Mild alpha-edge smoothing reduces jagged cut-outs without blurring the subject.
+    a = subject.getchannel("A").filter(ImageFilter.GaussianBlur(0.35))
+    subject.putalpha(a)
     x = (W - subject.width) // 2
-    y = max(0, H - subject.height - int(H * 0.025))  # shoulders near bottom, head stays centered
-    bg_rgba = bg.convert("RGBA")
-    bg_rgba.alpha_composite(subject, (x, y))
-    return bg_rgba.convert("RGB")
+    y = max(0, H - subject.height - int(H * 0.025))
+    bg.alpha_composite(subject, (x, y))
+    return bg.convert("RGB")
 
 def find_font(size, bold=False, italic=False):
     candidates = []
@@ -205,7 +218,7 @@ if uploaded:
                     bg_map = {"Sky blue": (105, 190, 235), "Soft light blue": (150, 205, 235), "White": (255, 255, 255), "Off-white": (248, 247, 242)}
                     out_size = (600, 800) if "600 × 800" in size_name else (600, 600)
                     work = fit_subject_on_background(rgba, bg_map[bg_name], out_size, margin=.06)
-                    notes.append("Background removed and replaced.")
+                    notes.append("Background removed and replaced with a soft studio gradient.")
                 else:
                     st.error("Background removal failed. Try again, or turn off background removal. Details: " + err)
                     st.stop()
@@ -214,7 +227,8 @@ if uploaded:
                 work = ImageOps.fit(work, out_size, method=Image.Resampling.LANCZOS, centering=(.5, .42))
                 notes.append("Original background kept.")
             out_size = (600, 800) if "600 × 800" in size_name else (600, 600)
-            work = ImageOps.fit(work, out_size, method=Image.Resampling.LANCZOS, centering=(.5, .43))
+            if work.size != out_size:
+                work = ImageOps.fit(work, out_size, method=Image.Resampling.LANCZOS, centering=(.5, .43))
             work = enhance_photo(work, strength)
             # Compose border and optional subtle shadow.
             if shadow:
