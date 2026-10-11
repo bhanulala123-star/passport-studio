@@ -63,8 +63,18 @@ if main_upload and sig_upload:
         main_img = Image.open(main_upload).convert("RGB")
         main_img = enhance_portrait(main_img)
         
-        # 2. Remove background using rembg (returns RGBA image)
-        main_no_bg = remove(main_img)
+        import streamlit as st
+from rembg import remove, new_session
+from PIL import Image
+
+# 4 MB wala lightweight session cache karein
+@st.cache_resource
+def load_rembg():
+    return new_session("u2netp")
+
+def process_background(image):
+    session = load_rembg()
+    return remove(image, session=session)
         
         # 3. Create a solid light blue background (standard studio passport blue)
         # Hex: #ADD8E6 -> RGB: (173, 216, 230)
