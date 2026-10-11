@@ -1,4 +1,4 @@
-78 se 85 line ko algin kaise kre import streamlit as st
+import streamlit as st
 import cv2
 import numpy as np
 from PIL import Image, ImageEnhance
@@ -63,18 +63,8 @@ if main_upload and sig_upload:
         main_img = Image.open(main_upload).convert("RGB")
         main_img = enhance_portrait(main_img)
         
-        import streamlit as st
-from rembg import remove, new_session
-from PIL import Image
-
-# 4 MB wala lightweight session cache karein
-@st.cache_resource
-def load_rembg():
-    return new_session("u2netp")
-
-def process_background(image):
-    session = load_rembg()
-    return remove(image, session=session)
+        # 2. Remove background using rembg (returns RGBA image)
+        main_no_bg = remove(main_img)
         
         # 3. Create a solid light blue background (standard studio passport blue)
         # Hex: #ADD8E6 -> RGB: (173, 216, 230)
@@ -109,9 +99,9 @@ def process_background(image):
     st.success("Success! Image generated.")
     
     # --- Final Output ---
-# --- Final Output ---
-st.image(final_portrait, caption="Generated Self-Attested Passport Photo", use_container_width=True)
-
+    # use_column_width=True use kiya hai taaki Streamlit ke kisi bhi version me error na aaye
+    st.image(final_portrait, caption="Final Self-Attested Photo", use_column_width=True)
+    
     # Prepare image for download
     buf = io.BytesIO()
     final_portrait.save(buf, format="JPEG", quality=95)
@@ -121,6 +111,5 @@ st.image(final_portrait, caption="Generated Self-Attested Passport Photo", use_c
         label="⬇️ Download High-Quality Photo",
         data=byte_im,
         file_name="self_attested_passport.jpg",
-        mime="image/jpeg",
-        use_container_width=True
+        mime="image/jpeg"
     )
