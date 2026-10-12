@@ -1,178 +1,130 @@
 import streamlit as st
 import cv2
 import numpy as np
-from PIL import Image, ImageEnhance, ImageDraw, ImageOps
-from rembg import remove, new_session
+from PIL import Image, ImageEnhance
+from rembg import remove
 import io
-import gc
 
-# --- ROCK-SOLID MEMORY OPTIMIZATION ---
-# AI session ko start mein hi cache kar liya gaya hai taaki button dabane par crash na ho
-@st.cache_resource
-def get_ai_session():
-    return new_session("u2netp")
+st.set_page_config(page_title="AI Studio Passport Maker", layout="wide")
 
-def detect_and_crop_face(image: Image.Image, target_ratio=3/4) -> Image.Image:
-    """Aapke prompt ke anusar: Detects face using OpenCV Haar Cascades exactly as requested."""
-    cv_img = cv2.cvtColor(np.array(image.convert("RGB")), cv2.COLOR_RGB2BGR)
-    img_h, img_w = cv_img.shape[:2]
+def create_studio_bg(w, h):
+    y, x = np.ogrid[:h, :w]
+    cx, cy = w / 2.0, h * 0.35
+    dist = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)
+    norm = np.clip(dist / np.sqrt(cx**2 + cy**2), 0.0, 1.0)
     
-    face_found = False
+    c_center = np.array([215, 238, 255])
+    c_edge = np.array([12, 60, 125])
     
-    try:
-        if hasattr(cv2, 'CascadeClassifier'):
-            gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
-            cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-            face_cascade = cv2.CascadeClassifier(cascade_path)
+    bg = np.zeros((h, w, 3), dtype=np.uint8)
+    for i in range(3):
+        bg[:, :, i] = (c_center[i] * (1.0 - norm) + c_edge[i] * norm).astype(np.uint8)
+    return Image.fromarray(bg).convert("RGBA")
+
+def align_and_crop_face(pil_img):
+    img_np = np.array(pil_img.convert("RGB"))
+    gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+    cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+    faces = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60))
+    
+    if len(faces) == 0:
+        return pil_img
+        
+    fx, fy, fw, fh = max(faces, key=lambda f: f[2] * f[3])
+    cx, cy = fx + fw // 2, fy + fh // 2
+    
+    target_h = int(fh * 1.85)
+    target_w = int(target_h * (3.5 / 4.5))
+    
+    x1 = max(0, cx - target_w // 2)
+    y1 = max(0, int(cy - target_h * 0.42))
+    x2 = min(pil_img.width, x1 + target_w)
+    y2 = min(pil_img.height, y1 + target_h)
+    
+    return pil_img.crop((x1, y1, x2, y2))
+
+def clean_signature(sign_img):
+    gray = np.array(sign_img.convert("L"))
+    binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 15, 7)
+    kernel = np.ones((2, 2), np.uint8)
+    bold = cv2.dilate(binary, kernel, iterations=1)
+    
+    rgba = np.zeros((bold.shape[0], bold.shape[1], 4), dtype=np.uint8)
+    rgba[:, :, 0] = 5
+    rgba[:, :, 1] = 5
+    rgba[:, :, 2] = 5
+    rgba[:, :, 3] = bold
+    return Image.fromarray(rgba, "RGBA")
+
+def generate_print_sheet(photo_img):
+    sheet_w, sheet_h = 1800, 1200 # 6x4 inch at 300 DPI
+    sheet = Image.new("RGB", (sheet_w, sheet_h), "white")
+    
+    p_w, p_h = 413, 531 # standard passport size
+    p_resized = photo_img.resize((p_w, p_h), Image.Resampling.LANCZOS)
+    
+    # 4x2 grid (8 photos)
+    spacing_x = (sheet_w - (4 * p_w)) // 5
+    spacing_y = (sheet_h - (2 * p_h)) // 3
+    
+    for row in range(2):
+        for col in range(4):
+            x = spacing_x + col * (p_w + spacing_x)
+            y = spacing_y + row * (p_h + spacing_y)
+            sheet.paste(p_resized, (x, y))
+    return sheet
+
+st.title("AI Passport Studio SaaS Tool")
+col1, col2 = st.columns(2)
+
+with col1:
+    photo_file = st.file_uploader("Upload Customer Photo", type=["jpg", "png", "jpeg"])
+    sign_file = st.file_uploader("Upload Signature", type=["jpg", "png", "jpeg"])
+    process_btn = st.button("Generate Passport & Print Sheet")
+
+with col2:
+    if process_btn and photo_file:
+        with st.spinner("AI Processing..."):
+            raw_photo = Image.open(photo_file)
+            aligned = align_and_crop_face(raw_photo)
             
-            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(50, 50))
+            # Matting
+            cutout = remove(aligned)
             
-            if len(faces) > 0:
-                faces = sorted(faces, key=lambda x: x[2]*x[3], reverse=True)
-                x, y, w, h = faces[0]
+            # Studio BG
+            w, h = 600, 800
+            bg = create_studio_bg(w, h)
+            cutout_resized = cutout.resize((w, h), Image.Resampling.LANCZOS)
+            combined = Image.alpha_composite(bg, cutout_resized)
+            
+            # Enhance
+            enhancer = ImageEnhance.Sharpness(combined.convert("RGB"))
+            enhanced = enhancer.enhance(1.25)
+            contrast = ImageEnhance.Contrast(enhanced)
+            final_img = contrast.enhance(1.08).convert("RGBA")
+            
+            # Sign Overlay
+            if sign_file:
+                raw_sign = Image.open(sign_file)
+                clean_sign = clean_signature(raw_sign)
                 
-                target_h = int(h * 2.5) 
-                target_w = int(target_h * target_ratio)
+                target_w = int(w * 0.45)
+                ratio = target_w / clean_sign.width
+                clean_sign = clean_sign.resize((target_w, int(clean_sign.height * ratio)), Image.Resampling.LANCZOS)
                 
-                center_x = x + w // 2
-                center_y = y + h // 2
-                
-                crop_y1 = max(0, center_y - int(target_h * 0.45))
-                crop_y2 = crop_y1 + target_h
-                crop_x1 = max(0, center_x - target_w // 2)
-                crop_x2 = crop_x1 + target_w
-                
-                if crop_y2 > img_h:
-                    crop_y2 = img_h
-                    crop_y1 = max(0, crop_y2 - target_h)
-                if crop_x2 > img_w:
-                    crop_x2 = img_w
-                    crop_x1 = max(0, crop_x2 - target_w)
-                    
-                cropped_cv = cv_img[crop_y1:crop_y2, crop_x1:crop_x2]
-                face_found = True
-    except Exception:
-        pass 
-
-    if not face_found:
-        target_w = min(img_w, int(img_h * target_ratio))
-        target_h = int(target_w / target_ratio)
-        x_offset = (img_w - target_w) // 2
-        y_offset = (img_h - target_h) // 2
-        cropped_cv = cv_img[y_offset:y_offset+target_h, x_offset:x_offset+target_w]
-
-    return Image.fromarray(cv2.cvtColor(cropped_cv, cv2.COLOR_BGR2RGB))
-
-def process_signature(sig_image: Image.Image) -> Image.Image:
-    """Aapke prompt ke anusar: Strict background removal keeping ONLY dark ink using Otsu's thresholding."""
-    cv_sig = cv2.cvtColor(np.array(sig_image.convert("RGB")), cv2.COLOR_RGB2BGR)
-    gray_sig = cv2.cvtColor(cv_sig, cv2.COLOR_BGR2GRAY)
-    
-    blurred = cv2.GaussianBlur(gray_sig, (3, 3), 0)
-    
-    _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    
-    h, w = thresh.shape
-    rgba_sig = np.zeros((h, w, 4), dtype=np.uint8)
-    rgba_sig[:, :, 0] = 0   
-    rgba_sig[:, :, 1] = 0   
-    rgba_sig[:, :, 2] = 51  
-    rgba_sig[:, :, 3] = thresh 
-    
-    return Image.fromarray(rgba_sig, "RGBA")
-
-def add_rounded_border(image: Image.Image, radius=20, border_width=4, color=(255, 255, 255)) -> Image.Image:
-    """Aapke prompt ke anusar: Overlays a thin elegant white border with rounded corners."""
-    mask = Image.new('L', image.size, 0)
-    draw = ImageDraw.Draw(mask)
-    draw.rounded_rectangle([(0, 0), image.size], radius=radius, fill=255)
-    
-    rounded_img = Image.new('RGBA', image.size, (0,0,0,0))
-    rounded_img.paste(image, (0,0), mask=mask)
-    
-    border_overlay = Image.new('RGBA', image.size, (0,0,0,0))
-    b_draw = ImageDraw.Draw(border_overlay)
-    b_draw.rounded_rectangle([(border_width//2, border_width//2), 
-                              (image.size[0]-border_width//2, image.size[1]-border_width//2)], 
-                             radius=radius, outline=color, width=border_width)
-    
-    return Image.alpha_composite(rounded_img, border_overlay)
-
-def prevent_oom_crash(img: Image.Image, max_size=600) -> Image.Image:
-    """Phone se aayi hui badi photos ko silently crash hone se rokta hai."""
-    img = ImageOps.exif_transpose(img)
-    img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
-    return img
-
-def main():
-    st.set_page_config(page_title="Passport Studio", layout="centered")
-    st.title("Passport Photo & Signature Generator")
-    st.write("Upload a portrait and a signature photo to generate a formatted passport size image.")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        main_photo = st.file_uploader("Upload Main Photo", type=["jpg", "jpeg", "png"])
-    with col2:
-        sig_photo = st.file_uploader("Upload Signature Photo", type=["jpg", "jpeg", "png"])
-
-    # Global session load
-    ai_session = get_ai_session()
-
-    if main_photo and sig_photo:
-        if st.button("Generate Passport Photo", use_container_width=True):
-            with st.spinner("Processing studio-quality photo..."):
-                try:
-                    img = Image.open(main_photo)
-                    img = prevent_oom_crash(img, max_size=600).convert("RGB")
-                    
-                    sig = Image.open(sig_photo)
-                    sig = prevent_oom_crash(sig, max_size=400).convert("RGB")
-                    
-                    # 1. Smart Crop
-                    cropped_img = detect_and_crop_face(img)
-                    
-                    # Force Memory Cleanup before heavy AI processing
-                    gc.collect()
-                    
-                    # 2. Background Removal
-                    subject_only = remove(cropped_img, session=ai_session).convert("RGBA")
-                    
-                    # 3. Apply Pastel Light-Blue Background (#8ECAE6)
-                    bg_color = (142, 202, 230, 255)
-                    final_bg = Image.new("RGBA", subject_only.size, bg_color)
-                    composite = Image.alpha_composite(final_bg, subject_only)
-                    
-                    # 4. Main Photo Enhancement
-                    enhancer_b = ImageEnhance.Brightness(composite)
-                    composite = enhancer_b.enhance(1.10)
-                    enhancer_c = ImageEnhance.Contrast(composite)
-                    composite = enhancer_c.enhance(1.05)
-                    
-                    # 5. Process Transparent Signature
-                    transparent_sig = process_signature(sig)
-                    
-                    # 6. Place Signature
-                    target_sig_w = int(composite.width * 0.55)
-                    sig_ratio = target_sig_w / transparent_sig.width
-                    target_sig_h = int(transparent_sig.height * sig_ratio)
-                    transparent_sig = transparent_sig.resize((target_sig_w, target_sig_h), Image.Resampling.LANCZOS)
-                    
-                    paste_x = (composite.width - target_sig_w) // 2
-                    paste_y = composite.height - target_sig_h - 20
-                    composite.paste(transparent_sig, (paste_x, paste_y), mask=transparent_sig)
-                    
-                    # 7. Add Correct White Border Overlay
-                    final_image = add_rounded_border(composite, radius=30, border_width=6)
-                    
-                    st.success("Photo Generated Successfully!")
-                    st.image(final_image, caption="Final Passport Photo", use_container_width=True)
-                    
-                    buf = io.BytesIO()
-                    final_image.convert("RGB").save(buf, format="JPEG", quality=95)
-                    st.download_button("Download Processed Photo", data=buf.getvalue(), file_name="passport_photo.jpg", mime="image/jpeg", use_container_width=True)
-                    
-                except Exception as e:
-                    st.error(f"An error occurred during processing: {str(e)}")
-
-if __name__ == "__main__":
-    main()
+                pos_x = w - target_w - 25
+                pos_y = h - clean_sign.height - 35
+                final_img.paste(clean_sign, (pos_x, pos_y), clean_sign)
+            
+            single_result = final_img.convert("RGB")
+            sheet_result = generate_print_sheet(single_result)
+            
+            st.image(single_result, caption="Single Passport Photo", width=300)
+            
+            buf_single = io.BytesIO()
+            single_result.save(buf_single, format="JPEG", quality=95)
+            st.download_button("Download Single Photo", buf_single.getvalue(), "passport.jpg", "image/jpeg")
+            
+            buf_sheet = io.BytesIO()
+            sheet_result.save(buf_sheet, format="JPEG", quality=95)
+            st.download_button("Download 4x6 Print Sheet (8 Photos)", buf_sheet.getvalue(), "print_sheet_4x6.jpg", "image/jpeg")
